@@ -1,4 +1,4 @@
-# dutch-bitz
+# dutch-blitz
 
 A simple Dutch Blitz score tracker.
 
