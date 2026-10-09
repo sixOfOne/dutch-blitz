@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Dutch Blitz{% endblock %}
+{% block content %}
+{% if active_games %}
+<section class="card">
+  <h2>Current games</h2>
+  {% for game in active_games %}
+  <a class="game-link" href="/games/{{ game.id }}">
+    <span class="game-names">{{ game.names_label }}</span>
+    <span class="game-detail">{{ game.detail_label }}</span>
+    <span class="game-meta">{{ game.meta_label }}</span>
+  </a>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="card" id="new-game">
+  <h1>New game</h1>
+  <p class="help">{{ MIN_PLAYERS }} to {{ MAX_PLAYERS }} players. First to the target wins. The usual target is {{ DEFAULT_TARGET }}.</p>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  <form method="post" action="/games" autocomplete="off">
+    <label class="target-field">Target score
+      <input type="number" inputmode="numeric" name="target_score" min="{{ MIN_TARGET }}" max="{{ MAX_TARGET }}" step="1" required value="{{ form_target }}">
+    </label>
+    <div id="player-fields">
+      {% for name in form_names %}
+      <label class="name-field{% if loop.index > MIN_PLAYERS and not name %} extra{% endif %}"{% if loop.index > MIN_PLAYERS and not name %} hidden{% endif %}>
+        Player {{ loop.index }}
+        <input name="player_name" maxlength="{{ MAX_NAME_LENGTH }}" placeholder="Name"{% if loop.index <= MIN_PLAYERS %} required{% endif %} value="{{ name }}" autocapitalize="words">
+      </label>
+      {% endfor %}
+    </div>
+    <button type="button" class="secondary" data-add-player>Add player</button>
+    <p class="help">Leave unused name rows blank at the end.</p>
+    <div class="actions">
+      <button class="primary" type="submit">Start game</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Past games</h2>
+  {% if past_games %}
+    {% for game in past_games %}
+    <a class="game-link" href="/games/{{ game.id }}">
+      <span class="game-names">{{ game.names_label }}</span>
+      <span class="game-detail">{{ game.detail_label }}</span>
+      <span class="game-meta">{{ game.meta_label }}</span>
+    </a>
+    {% endfor %}
+  {% else %}
+  <p class="muted">Finished games will be listed here.</p>
+  {% endif %}
+</section>
+{% endblock %}

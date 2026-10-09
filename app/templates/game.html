@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ game.headline }} · Dutch Blitz{% endblock %}
+{% block content %}
+<article class="card">
+  <p class="eyebrow">Game {{ game.id }} · {{ game.created_label }}</p>
+  <h1>{{ game.headline }}</h1>
+  <p class="subhead">{{ game.subhead }}</p>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  <ul class="chips">
+    {% for player in game.players %}
+    <li class="chip seat-{{ player.seat }}{% if player.tag %} marked{% endif %}">
+      <span class="chip-name">{{ player.name }}{% if player.tag %} <span class="tag">{{ player.tag }}</span>{% endif %}</span>
+      <span class="chip-score{% if player.total > 0 %} pos{% elif player.total < 0 %} neg{% endif %}">{{ player.total_label }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</article>
+
+{% if editing or not game.finished %}
+<section class="card">
+  <h2>{% if editing %}Fix round {{ game.round_count }}{% else %}Round {{ game.next_round }}{% endif %}</h2>
+  <p class="help">Dutch cards score +1. Each card still in the Blitz pile scores −2.{% if editing %} Saving recalculates the totals and whether the game is over.{% endif %}</p>
+  <form method="post" action="{% if editing %}/games/{{ game.id }}/rounds/last{% else %}/games/{{ game.id }}/rounds{% endif %}" autocomplete="off">
+    {% for player in game.players %}
+    {% set entered = draft.get(player.id|string, {}) %}
+    <div class="score-row seat-{{ player.seat }}" data-score-row>
+      <div class="who">
+        <span class="mark" aria-hidden="true"></span>
+        <span class="who-name">{{ player.name }}</span>
+        <span class="who-total">{{ player.total_label }}</span>
+      </div>
+      <label>Dutch cards
+        <input data-dutch type="number" inputmode="numeric" min="0" max="{{ MAX_DUTCH_CARDS }}" step="1" required name="dutch_{{ player.id }}" value="{{ entered.get('dutch', '') }}">
+      </label>
+      <label>Blitz left
+        <input data-blitz type="number" inputmode="numeric" min="0" max="{{ MAX_BLITZ_LEFT }}" step="1" required name="blitz_{{ player.id }}" value="{{ entered.get('blitz', '') }}">
+      </label>
+      <p class="preview" data-preview aria-live="polite">—</p>
+    </div>
+    {% endfor %}
+    <div class="actions">
+      <button class="primary" type="submit">{% if editing %}Update round {{ game.round_count }}{% else %}Save round {{ game.next_round }}{% endif %}</button>
+    </div>
+    {% if editing %}
+    <p class="row-actions"><a class="text-link" href="/games/{{ game.id }}">Cancel</a></p>
+    {% endif %}
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Score sheet</h2>
+  {% if game.rounds %}
+  <div class="sheet-wrap">
+    <table class="sheet">
+      <thead>
+        <tr>
+          <th scope="col">Round</th>
+          {% for player in game.players %}
+          <th scope="col">{{ player.name }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in game.rounds %}
+        <tr>
+          <th scope="row">{{ row.number }}</th>
+          {% for cell in row.cells %}
+          <td>
+            <span class="delta{% if cell.score > 0 %} pos{% elif cell.score < 0 %} neg{% endif %}">{{ cell.score_label }}</span>
+            <span class="parts">{{ cell.parts_label }}</span>
+            <span class="running">Total {{ cell.total_label }}</span>
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if not editing %}
+  <p class="row-actions"><a class="text-link" href="/games/{{ game.id }}?edit=1">Fix last round</a></p>
+  {% endif %}
+  <form method="post" action="/games/{{ game.id }}/undo">
+    <button class="danger" type="submit">{% if game.finished %}Undo last round and resume{% else %}Undo last round{% endif %}</button>
+  </form>
+  {% else %}
+  <p class="muted">Rounds will show up here after you save the first one.</p>
+  {% endif %}
+</section>
+{% endblock %}

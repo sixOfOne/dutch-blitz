@@ -1,0 +1,3 @@
+"""Dutch Blitz score keeper."""
+
+__version__ = "0.1.0"

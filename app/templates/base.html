@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="theme-color" content="#f4efe6">
+  <title>{% block title %}Dutch Blitz{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <noscript>
+    <style>
+      .name-field.extra[hidden] { display: flex !important; }
+      [data-add-player] { display: none !important; }
+    </style>
+  </noscript>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/">Dutch Blitz</a>
+    <nav>
+      <a href="/">Games</a>
+      <a href="/#new-game">New game</a>
+    </nav>
+  </header>
+  <div class="stripe" aria-hidden="true"></div>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <p>Round score = Dutch cards − 2 × Blitz cards left. The game ends when someone reaches the target. The highest total wins, and a tie shares the win.</p>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,424 @@
+:root {
+  --bg: #f4efe6;
+  --ink: #241c16;
+  --muted: #6d6258;
+  --card: #fffaf4;
+  --line: #e6d9c8;
+  --orange: #e15a28;
+  --blue: #2c5aa0;
+  --shadow: 0 10px 30px rgba(70, 42, 16, 0.05);
+  color: var(--ink);
+  background: var(--bg);
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+h1,
+h2,
+.brand {
+  font-family: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  font-size: 1.8rem;
+  line-height: 1.15;
+  margin: 0 0 8px;
+}
+
+h2 {
+  font-size: 1.35rem;
+  margin: 0 0 12px;
+}
+
+.site-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  max-width: 840px;
+  margin: 0 auto;
+  padding: 16px 16px 12px;
+}
+
+.brand {
+  color: inherit;
+  text-decoration: none;
+  font-size: 1.45rem;
+}
+
+nav {
+  display: flex;
+  gap: 14px;
+}
+
+nav a {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.stripe {
+  height: 6px;
+  background: linear-gradient(
+    90deg,
+    #d23b3b 0%,
+    #d23b3b 25%,
+    #e2b423 25%,
+    #e2b423 50%,
+    #2f7d4a 50%,
+    #2f7d4a 75%,
+    #2c5aa0 75%,
+    #2c5aa0 100%
+  );
+}
+
+main {
+  max-width: 840px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+
+.help,
+.muted,
+.subhead,
+.game-meta,
+.eyebrow {
+  color: var(--muted);
+}
+
+.help,
+.subhead {
+  margin-top: 0;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.error {
+  background: #fdecea;
+  color: #8d241c;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 0 0 12px;
+}
+
+label,
+.name-field,
+.target-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+input {
+  font: inherit;
+  font-size: 16px;
+  width: 100%;
+  min-height: 48px;
+  border-radius: 12px;
+  border: 1px solid #d9cbb8;
+  padding: 0 12px;
+  background: white;
+  color: var(--ink);
+}
+
+input:focus {
+  outline: 2px solid var(--orange);
+  border-color: transparent;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.primary,
+.secondary,
+.danger {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  border-radius: 14px;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.primary {
+  background: var(--orange);
+  color: white;
+  border: 0;
+}
+
+.primary:hover {
+  background: #c94e22;
+}
+
+.secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid #d9cbb8;
+  margin: 4px 0 8px;
+}
+
+.danger {
+  background: transparent;
+  color: #9d2c2c;
+  border: 1px solid #e4b2aa;
+  margin-top: 12px;
+}
+
+.actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 12px 0 4px;
+  background: linear-gradient(to bottom, rgba(255, 250, 244, 0), var(--card) 28%);
+}
+
+.text-link {
+  color: var(--blue);
+  font-weight: 700;
+}
+
+.game-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 10px;
+  background: white;
+}
+
+.game-link:hover,
+.game-link:focus-visible {
+  border-color: var(--orange);
+}
+
+.game-names,
+.game-detail,
+.game-meta {
+  display: block;
+}
+
+.game-names {
+  font-weight: 700;
+}
+
+.game-detail {
+  margin-top: 4px;
+}
+
+.game-meta {
+  margin-top: 4px;
+  font-size: 0.85rem;
+}
+
+.chips {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 10px;
+}
+
+.chip {
+  background: white;
+  border-radius: 16px;
+  padding: 10px 12px 12px;
+  border-top: 4px solid var(--seat, var(--line));
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.chip.marked {
+  box-shadow: inset 0 0 0 2px var(--orange);
+}
+
+.chip-name {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.chip-score {
+  display: block;
+  margin-top: 4px;
+  font-family: Georgia, "Iowan Old Style", Palatino, serif;
+  font-size: 2rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag {
+  display: inline-block;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--orange);
+  color: white;
+  border-radius: 999px;
+  padding: 2px 6px;
+  vertical-align: middle;
+}
+
+.seat-1 { --seat: #d23b3b; }
+.seat-2 { --seat: #2c5aa0; }
+.seat-3 { --seat: #e2b423; }
+.seat-4 { --seat: #2f7d4a; }
+.seat-5 { --seat: #c45c26; }
+.seat-6 { --seat: #3d6b8a; }
+.seat-7 { --seat: #8a6a22; }
+.seat-8 { --seat: #3f6b52; }
+
+.score-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+  border-top: 1px solid var(--line);
+  padding: 12px 0 4px;
+}
+
+.score-row label {
+  margin: 0;
+}
+
+.who {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.who-total {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 99px;
+  background: var(--seat, #999);
+}
+
+.preview {
+  margin: 0;
+  min-width: 3.4rem;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos { color: #1d7a43; }
+.neg { color: #b42318; }
+
+.sheet-wrap {
+  overflow-x: auto;
+}
+
+.sheet {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.sheet th,
+.sheet td {
+  padding: 8px 10px;
+  text-align: right;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  min-width: 8.5rem;
+}
+
+.sheet thead th {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.sheet tbody th[scope="row"] {
+  position: sticky;
+  left: 0;
+  background: var(--card);
+  min-width: 3.2rem;
+  text-align: left;
+  z-index: 1;
+}
+
+.delta,
+.parts,
+.running {
+  display: block;
+}
+
+.delta {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.parts,
+.running {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.row-actions {
+  margin: 14px 0 0;
+}
+
+.site-footer {
+  max-width: 840px;
+  margin: 0 auto;
+  padding: 4px 16px 32px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
