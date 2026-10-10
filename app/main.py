@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from app.auth import SESSION_COOKIE, AuthError, DevBypassVerifier, verifier_from_env
 from app.config import clerk_browser_config
 from app.config import db_path as configured_db_path
+from app.decks import COLORS, ICONS, deck_face
 from app.errors import ForbiddenError, NotFoundError, ScoringError
 from app.scoring import (
     DEFAULT_TARGET,
@@ -38,6 +39,9 @@ templates.env.globals.update(
     MAX_DUTCH_CARDS=MAX_DUTCH_CARDS,
     MAX_BLITZ_LEFT=MAX_BLITZ_LEFT,
     MAX_NAME_LENGTH=MAX_NAME_LENGTH,
+    DECK_COLORS=COLORS,
+    DECK_ICONS=ICONS,
+    deck_face=deck_face,
 )
 
 
@@ -82,12 +86,12 @@ def create_app(db_path: str | None = None, verifier=None) -> FastAPI:
 def _register_routes(app: FastAPI) -> None:
     @app.get("/")
     def home(request: Request):
-        return _home(request, error=None, names=[], target=str(DEFAULT_TARGET))
+        return _home(request, error=None, names=[], colors=None, icons=None, target=str(DEFAULT_TARGET))
 
     @app.post("/games")
     async def create_game(request: Request):
         form = await request.form()
-        names = [str(value) for value in form.getlist("player_name")]
+        names, colors, icons = _posted_players(form)
         target_raw = form.get("target_score")
         target_text = str(DEFAULT_TARGET) if target_raw is None or str(target_raw).strip() == "" else str(target_raw)
         try:
@@ -95,12 +99,16 @@ def _register_routes(app: FastAPI) -> None:
                 names,
                 parse_target(target_text),
                 owner_id=_user(request),
+                colors=colors,
+                icons=icons,
             )
         except ScoringError as exc:
             return _home(
                 request,
                 error=exc.message,
                 names=names,
+                colors=colors,
+                icons=icons,
                 target=target_text,
                 status_code=400,
             )
@@ -252,24 +260,45 @@ def _unauthenticated(request: Request):
     return _render(request, "sign_in.html", {}, status_code=401)
 
 
+def _posted_players(form) -> tuple[list[str], list[str], list[str]]:
+    names = [str(value) for value in form.getlist("player_name")]
+    colors = [str(form.get(f"player_color_{index}") or "") for index in range(1, len(names) + 1)]
+    icons = [str(form.get(f"player_icon_{index}") or "") for index in range(1, len(names) + 1)]
+    return names, colors, icons
+
+
+def _pad_form(values: list[str]) -> list[str]:
+    padded = [str(value) for value in values[:MAX_PLAYERS]]
+    padded.extend([""] * (MAX_PLAYERS - len(padded)))
+    return padded
+
+
 def _home(
     request: Request,
     *,
     error: str | None,
     names: list[str],
+    colors: list[str] | None,
+    icons: list[str] | None,
     target: str,
     status_code: int = 200,
 ):
     user = _user(request)
     games = [summarize(game, viewer_id=user) for game in _store(request).list_games(user)]
-    padded = list(names[:MAX_PLAYERS])
-    padded.extend([""] * (MAX_PLAYERS - len(padded)))
+    if colors is None:
+        form_colors = [color.id for color in COLORS]
+        form_icons = [color.icon_id for color in COLORS]
+    else:
+        form_colors = _pad_form(colors)
+        form_icons = _pad_form(icons or [])
     return _render(
         request,
         "index.html",
         {
             "error": error,
-            "form_names": padded,
+            "form_names": _pad_form(names),
+            "form_colors": _pad_form(form_colors),
+            "form_icons": _pad_form(form_icons),
             "form_target": target,
             "active_games": [game for game in games if game.active],
             "past_games": [game for game in games if not game.active],
@@ -289,7 +318,7 @@ def _game_page(
 ):
     user = _user(request)
     is_owner = _is_owner(game, user)
-    your_name = next((player.name for player in game.players if player.user_id == user), None)
+    you = next((player for player in game.players if player.user_id == user), None)
     return _render(
         request,
         "game.html",
@@ -299,7 +328,8 @@ def _game_page(
             "draft": draft or {},
             "editing": editing,
             "is_owner": is_owner,
-            "your_name": your_name,
+            "your_name": None if you is None else you.name,
+            "your_deck": None if you is None else deck_face(you.deck_color, you.deck_icon),
             "share": _share_context(request, game) if is_owner else None,
         },
         status_code=status_code,
@@ -319,7 +349,15 @@ def _share_context(request: Request, game: Game) -> dict:
             state = "you"
         else:
             state = "taken"
-        seats.append({"id": player.id, "name": player.name, "state": state})
+        seats.append(
+            {
+                "id": player.id,
+                "name": player.name,
+                "state": state,
+                "deck_color": player.deck_color,
+                "deck_icon": player.deck_icon,
+            }
+        )
     return {"url": url, "seats": seats}
 
 

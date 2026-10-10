@@ -235,6 +235,123 @@ def test_legacy_games_stay_unowned_and_hidden(tmp_path):
     assert store.get_game(1, OWNER) is None
 
 
+def test_deck_color_and_icon_round_trip_and_default_icon(tmp_path):
+    store = _store(tmp_path)
+    game_id = store.create_game(
+        ["Ada", "Bo", ""],
+        owner_id=OWNER,
+        colors=["red", "navy", "red"],
+        icons=["wheelbarrow", None, "pump"],
+    )
+    game = store.get_game(game_id, OWNER)
+    assert game is not None
+    assert [(player.name, player.deck_color, player.deck_icon) for player in game.players] == [
+        ("Ada", "red", "wheelbarrow"),
+        ("Bo", "navy", "wheelbarrow"),
+    ]
+    store.init()
+    again = store.get_game(game_id, OWNER)
+    assert again is not None
+    assert [(player.deck_color, player.deck_icon) for player in again.players] == [
+        ("red", "wheelbarrow"),
+        ("navy", "wheelbarrow"),
+    ]
+
+
+def test_duplicate_deck_color_is_rejected_and_not_saved(tmp_path):
+    store = _store(tmp_path)
+    with pytest.raises(ScoringError, match="Red is already chosen"):
+        store.create_game(
+            ["Ada", "Bo"],
+            owner_id=OWNER,
+            colors=["RED", "red"],
+            icons=["carriage", "pump"],
+        )
+    assert store.list_games(OWNER) == []
+    with pytest.raises(ScoringError, match="deck color"):
+        store.create_game(["Ada", "Bo"], owner_id=OWNER, colors=["mauve", "blue"])
+    with pytest.raises(ScoringError, match="deck icon"):
+        store.create_game(
+            ["Ada", "Bo"],
+            owner_id=OWNER,
+            colors=["red", "blue"],
+            icons=["carriage", "unicorn"],
+        )
+    assert store.list_games(OWNER) == []
+
+
+def test_saved_games_gain_deck_columns_without_losing_rows(tmp_path):
+    path = tmp_path / "backup.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE games (
+                id INTEGER PRIMARY KEY,
+                target_score INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                owner_id TEXT,
+                invite_token TEXT
+            );
+            CREATE TABLE players (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                seat INTEGER NOT NULL,
+                user_id TEXT
+            );
+            CREATE TABLE rounds (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                round_number INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE round_entries (
+                id INTEGER PRIMARY KEY,
+                round_id INTEGER NOT NULL,
+                player_id INTEGER NOT NULL,
+                dutch_cards INTEGER NOT NULL,
+                blitz_left INTEGER NOT NULL,
+                score INTEGER NOT NULL
+            );
+            INSERT INTO games (target_score, created_at, status, owner_id)
+            VALUES (75, '2024-06-01T00:00:00+00:00', 'active', 'user_owner');
+            INSERT INTO players (game_id, name, seat) VALUES (1, 'Ada', 1), (1, 'Bo', 2);
+            INSERT INTO rounds (game_id, round_number, created_at)
+            VALUES (1, 1, '2024-06-01T01:00:00+00:00');
+            INSERT INTO round_entries (round_id, player_id, dutch_cards, blitz_left, score)
+            VALUES (1, 1, 4, 1, 2), (1, 2, 3, 0, 3);
+            """
+        )
+    store = GameStore(str(path))
+    store.init()
+    game = store.get_game(1, OWNER)
+    assert game is not None
+    assert [(player.name, player.deck_color, player.deck_icon) for player in game.players] == [
+        ("Ada", None, None),
+        ("Bo", None, None),
+    ]
+    assert [entry.score for entry in game.rounds[0].entries] == [2, 3]
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(players)")}
+        stored = conn.execute("SELECT deck_color, deck_icon FROM players ORDER BY seat").fetchall()
+    assert {"deck_color", "deck_icon"} <= columns
+    assert stored == [(None, None), (None, None)]
+
+    store.init()
+    fresh = store.create_game(["Cy", "Di"], owner_id=OWNER, colors=["pink", "purple"])
+    fresh_game = store.get_game(fresh, OWNER)
+    assert fresh_game is not None
+    assert [(player.deck_color, player.deck_icon) for player in fresh_game.players] == [
+        ("pink", "water-can"),
+        ("purple", "butter-churn"),
+    ]
+    original = store.get_game(1, OWNER)
+    assert original is not None
+    assert [player.deck_color for player in original.players] == [None, None]
+    assert [entry.score for entry in original.rounds[0].entries] == [2, 3]
+
+
 def test_owner_id_is_required(tmp_path):
     store = _store(tmp_path)
     with pytest.raises(ValueError, match="owner_id"):

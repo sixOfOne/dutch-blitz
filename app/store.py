@@ -1,6 +1,6 @@
 """SQLite persistence for games, players, and rounds."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -8,12 +8,12 @@ from pathlib import Path
 import secrets
 import sqlite3
 
+from app.decks import assign_decks
 from app.errors import ForbiddenError, NotFoundError, ScoringError
 from app.scoring import (
     DEFAULT_TARGET,
     outcome,
     round_score,
-    validate_players,
     validate_target,
 )
 
@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS players (
     name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),
     seat INTEGER NOT NULL CHECK (seat BETWEEN 1 AND 8),
     user_id TEXT,
+    deck_color TEXT,
+    deck_icon TEXT,
     UNIQUE (game_id, seat),
     UNIQUE (game_id, name)
 );
@@ -67,6 +69,8 @@ class Player:
     name: str
     seat: int
     user_id: str | None = None
+    deck_color: str | None = None
+    deck_icon: str | None = None
 
 
 @dataclass
@@ -101,6 +105,8 @@ class SeatInvite:
     name: str
     seat: int
     open: bool
+    deck_color: str | None = None
+    deck_icon: str | None = None
 
 
 @dataclass
@@ -151,9 +157,11 @@ class GameStore:
         target_score: int = DEFAULT_TARGET,
         *,
         owner_id: str,
+        colors: Sequence[str | None] | None = None,
+        icons: Sequence[str | None] | None = None,
     ) -> int:
         owner = require_owner_id(owner_id)
-        cleaned = validate_players(names)
+        assigned = assign_decks(names, colors, icons)
         target = validate_target(target_score)
         with self._transaction() as conn:
             try:
@@ -167,13 +175,13 @@ class GameStore:
                 game_id = cursor.lastrowid
                 if game_id is None:
                     raise ScoringError("Could not save that game.")
-                for seat, name in enumerate(cleaned, start=1):
+                for seat, (name, color, icon) in enumerate(assigned, start=1):
                     conn.execute(
                         """
-                        INSERT INTO players (game_id, name, seat)
-                        VALUES (?, ?, ?)
+                        INSERT INTO players (game_id, name, seat, deck_color, deck_icon)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
-                        (game_id, name, seat),
+                        (game_id, name, seat, color, icon),
                     )
             except sqlite3.IntegrityError as exc:
                 raise ScoringError(
@@ -277,6 +285,8 @@ class GameStore:
                     name=player.name,
                     seat=player.seat,
                     open=player.user_id is None,
+                    deck_color=player.deck_color,
+                    deck_icon=player.deck_icon,
                 )
                 for player in players
             ],
@@ -397,6 +407,7 @@ class GameStore:
         Games saved before accounts keep a NULL owner. They stay in the file,
         are hidden from every account, and cannot be claimed or invited.
         Games saved before sharing keep a NULL invite token and unclaimed seats.
+        Players saved before deck colors keep NULL deck_color and deck_icon.
         """
         game_columns = {row["name"] for row in conn.execute("PRAGMA table_info(games)")}
         if "owner_id" not in game_columns:
@@ -406,6 +417,10 @@ class GameStore:
         player_columns = {row["name"] for row in conn.execute("PRAGMA table_info(players)")}
         if "user_id" not in player_columns:
             conn.execute("ALTER TABLE players ADD COLUMN user_id TEXT")
+        if "deck_color" not in player_columns:
+            conn.execute("ALTER TABLE players ADD COLUMN deck_color TEXT")
+        if "deck_icon" not in player_columns:
+            conn.execute("ALTER TABLE players ADD COLUMN deck_icon TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_games_owner ON games(owner_id)")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_games_invite ON games(invite_token)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_players_user ON players(user_id)")
@@ -486,9 +501,21 @@ class GameStore:
 
     def _players(self, conn: sqlite3.Connection, game_id: int) -> list[Player]:
         return [
-            Player(id=row["id"], name=row["name"], seat=row["seat"], user_id=row["user_id"])
+            Player(
+                id=row["id"],
+                name=row["name"],
+                seat=row["seat"],
+                user_id=row["user_id"],
+                deck_color=row["deck_color"],
+                deck_icon=row["deck_icon"],
+            )
             for row in conn.execute(
-                "SELECT id, name, seat, user_id FROM players WHERE game_id = ? ORDER BY seat",
+                """
+                SELECT id, name, seat, user_id, deck_color, deck_icon
+                FROM players
+                WHERE game_id = ?
+                ORDER BY seat
+                """,
                 (game_id,),
             )
         ]

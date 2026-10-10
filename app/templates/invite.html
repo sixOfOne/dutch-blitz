@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "macros.html" as ui %}
 {% block title %}Join game · Dutch Blitz{% endblock %}
 {% block content %}
 <section class="card">
@@ -10,7 +11,7 @@
   <ul class="seat-list">
     {% for seat in invite.seats %}
     <li class="seat-share">
-      <span class="seat-name">{{ seat.name }}</span>
+      <span class="seat-name">{{ seat.name }} {{ ui.deck_badge(deck_face(seat.deck_color, seat.deck_icon)) }}</span>
       {% if seat.open %}
       <form method="post" action="/join/{{ token }}">
         <input type="hidden" name="player_id" value="{{ seat.player_id }}">

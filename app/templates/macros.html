@@ -1,0 +1,9 @@
+{% macro deck_badge(face) -%}
+{%- if face.text -%}
+<span class="deck-badge{% if face.color %} deck-{{ face.color }}{% endif %}"{% if face.color %} data-color="{{ face.color }}"{% endif %}{% if face.icon %} data-icon="{{ face.icon }}"{% endif %}>
+  {%- if face.color -%}<span class="swatch" aria-hidden="true"></span>{%- endif -%}
+  {%- if face.svg -%}<span class="glyph" aria-hidden="true">{{ face.svg }}</span>{%- endif -%}
+  <span class="deck-text">{{ face.text }}</span>
+</span>
+{%- endif -%}
+{%- endmacro %}

@@ -1,12 +1,20 @@
 {% extends "base.html" %}
+{% import "macros.html" as ui %}
 {% block title %}Dutch Blitz{% endblock %}
 {% block content %}
 {% if active_games %}
 <section class="card">
   <h2>Current games</h2>
   {% for game in active_games %}
-  <a class="game-link" href="/games/{{ game.id }}">
+    <a class="game-link" href="/games/{{ game.id }}">
     <span class="game-names">{{ game.names_label }}</span>
+    {% if game.players | selectattr("deck_text") | list %}
+    <span class="listed-decks">
+      {% for player in game.players if player.deck_text %}
+      <span class="listed-player">{{ player.name }} {{ ui.deck_badge(deck_face(player.deck_color, player.deck_icon)) }}</span>
+      {% endfor %}
+    </span>
+    {% endif %}
     <span class="game-detail">{{ game.detail_label }}</span>
     <span class="game-meta">{{ game.meta_label }}</span>
   </a>
@@ -24,12 +32,48 @@
     <label class="target-field">Target score
       <input type="number" inputmode="numeric" name="target_score" min="{{ MIN_TARGET }}" max="{{ MAX_TARGET }}" step="1" required value="{{ form_target }}">
     </label>
-    <div id="player-fields">
+    <div id="player-add">
+      <h2>Players</h2>
+      <p class="help">Pick a deck color. Its icon fills in, and you can change the icon. Each color can only be used once. The icon and the color name both show on the scoreboard.</p>
+      <p class="error" data-deck-warning role="alert" hidden></p>
       {% for name in form_names %}
-      <label class="name-field{% if loop.index > MIN_PLAYERS and not name %} extra{% endif %}"{% if loop.index > MIN_PLAYERS and not name %} hidden{% endif %}>
-        Player {{ loop.index }}
-        <input name="player_name" maxlength="{{ MAX_NAME_LENGTH }}" placeholder="Name"{% if loop.index <= MIN_PLAYERS %} required{% endif %} value="{{ name }}" autocapitalize="words">
-      </label>
+      {% set player_number = loop.index %}
+      {% set color = form_colors[loop.index0] %}
+      {% set icon = form_icons[loop.index0] %}
+      <section class="player-card{% if player_number > MIN_PLAYERS and not name %} extra{% endif %}" data-player-card{% if player_number > MIN_PLAYERS and not name %} hidden{% endif %}>
+        <label class="name-field">Player {{ player_number }}
+          <input name="player_name" maxlength="{{ MAX_NAME_LENGTH }}" placeholder="Name"{% if player_number <= MIN_PLAYERS %} required{% endif %} value="{{ name }}" autocapitalize="words">
+        </label>
+        <p class="deck-summary" data-deck-summary>{{ deck_face(color, icon).text or "No deck yet" }}</p>
+        <fieldset class="deck-group">
+          <legend>Deck color</legend>
+          <div class="choice-row">
+            {% for deck in DECK_COLORS %}
+            <label class="choice">
+              <input type="radio" name="player_color_{{ player_number }}" value="{{ deck.id }}" data-default-icon="{{ deck.icon_id }}"{% if color == deck.id %} checked{% endif %}>
+              <span class="choice-face">
+                <span class="swatch deck-{{ deck.id }}" aria-hidden="true"></span>
+                <span class="choice-text">{{ deck.label }}</span>
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+        <fieldset class="deck-group">
+          <legend>Deck icon</legend>
+          <div class="choice-row">
+            {% for deck_icon in DECK_ICONS %}
+            <label class="choice">
+              <input type="radio" name="player_icon_{{ player_number }}" value="{{ deck_icon.id }}"{% if icon == deck_icon.id %} checked{% endif %}>
+              <span class="choice-face">
+                <span class="glyph" aria-hidden="true">{{ deck_icon.svg }}</span>
+                <span class="choice-text">{{ deck_icon.label }}</span>
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+      </section>
       {% endfor %}
     </div>
     <button type="button" class="secondary" data-add-player>Add player</button>
@@ -45,10 +89,17 @@
   {% if past_games %}
     {% for game in past_games %}
     <a class="game-link" href="/games/{{ game.id }}">
-      <span class="game-names">{{ game.names_label }}</span>
-      <span class="game-detail">{{ game.detail_label }}</span>
-      <span class="game-meta">{{ game.meta_label }}</span>
-    </a>
+    <span class="game-names">{{ game.names_label }}</span>
+    {% if game.players | selectattr("deck_text") | list %}
+    <span class="listed-decks">
+      {% for player in game.players if player.deck_text %}
+      <span class="listed-player">{{ player.name }} {{ ui.deck_badge(deck_face(player.deck_color, player.deck_icon)) }}</span>
+      {% endfor %}
+    </span>
+    {% endif %}
+    <span class="game-detail">{{ game.detail_label }}</span>
+    <span class="game-meta">{{ game.meta_label }}</span>
+  </a>
     {% endfor %}
   {% else %}
   <p class="muted">Finished games will be listed here.</p>

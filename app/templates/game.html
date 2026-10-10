@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "macros.html" as ui %}
 {% block title %}{{ game.headline }} · Dutch Blitz{% endblock %}
 {% block content %}
 <article class="card">
@@ -10,7 +11,9 @@
   {% endif %}
   <ul class="chips">
     {% for player in game.players %}
-    <li class="chip seat-{{ player.seat }}{% if player.tag %} marked{% endif %}">
+    {% set face = deck_face(player.deck_color, player.deck_icon) %}
+    <li class="chip{% if player.deck_color %} deck-{{ player.deck_color }}{% else %} seat-{{ player.seat }}{% endif %}{% if player.tag %} marked{% endif %}">
+      {% if face.text %}{{ ui.deck_badge(face) }}{% endif %}
       <span class="chip-name">{{ player.name }}{% if player.tag %} <span class="tag">{{ player.tag }}</span>{% endif %}</span>
       <span class="chip-score{% if player.total > 0 %} pos{% elif player.total < 0 %} neg{% endif %}">{{ player.total_label }}</span>
     </li>
@@ -19,7 +22,7 @@
 </article>
 
 {% if your_name %}
-<p class="banner-note">You're playing as {{ your_name }}.</p>
+<p class="banner-note">You're playing as {{ your_name }}{% if your_deck and your_deck.text %} {{ ui.deck_badge(your_deck) }}{% endif %}.</p>
 {% endif %}
 
 {% if editing or not game.finished %}
@@ -29,9 +32,10 @@
   <form method="post" action="{% if editing %}/games/{{ game.id }}/rounds/last{% else %}/games/{{ game.id }}/rounds{% endif %}" autocomplete="off">
     {% for player in game.players %}
     {% set entered = draft.get(player.id|string, {}) %}
-    <div class="score-row seat-{{ player.seat }}" data-score-row>
+    {% set face = deck_face(player.deck_color, player.deck_icon) %}
+    <div class="score-row{% if player.deck_color %} deck-{{ player.deck_color }}{% else %} seat-{{ player.seat }}{% endif %}" data-score-row>
       <div class="who">
-        <span class="mark" aria-hidden="true"></span>
+        {% if face.text %}{{ ui.deck_badge(face) }}{% else %}<span class="mark" aria-hidden="true"></span>{% endif %}
         <span class="who-name">{{ player.name }}</span>
         <span class="who-total">{{ player.total_label }}</span>
       </div>
@@ -63,7 +67,13 @@
         <tr>
           <th scope="col">Round</th>
           {% for player in game.players %}
-          <th scope="col">{{ player.name }}</th>
+          {% set face = deck_face(player.deck_color, player.deck_icon) %}
+          <th scope="col">
+            <span class="sheet-who">
+              {% if face.text %}{{ ui.deck_badge(face) }}{% endif %}
+              <span class="sheet-name">{{ player.name }}</span>
+            </span>
+          </th>
           {% endfor %}
         </tr>
       </thead>
@@ -122,7 +132,7 @@
   <ul class="seat-list">
     {% for seat in share.seats %}
     <li class="seat-share">
-      <span class="seat-name">{{ seat.name }}</span>
+      <span class="seat-name">{{ seat.name }} {{ ui.deck_badge(deck_face(seat.deck_color, seat.deck_icon)) }}</span>
       {% if seat.state == "open" %}
       <form method="post" action="/games/{{ game.id }}/seats/{{ seat.id }}/claim">
         <button class="secondary" type="submit">This is me</button>

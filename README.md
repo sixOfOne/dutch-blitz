@@ -39,7 +39,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover negative round scores, running totals, the default target and a custom target, the 2-player and 8-player limits, ties, saved history, undo, editing the last round, sign-in enforcement, invite links, and that an outsider cannot see a game. Token checks in tests are stubbed, so the suite does not call Clerk.
+The tests cover negative round scores, running totals, the default target and a custom target, the 2-player and 8-player limits, ties, saved history, undo, editing the last round, sign-in enforcement, invite links, deck color and icon, the migration that adds those columns, and that an outsider cannot see a game. Token checks in tests are stubbed, so the suite does not call Clerk.
 
 ## Configuration
 
@@ -169,6 +169,10 @@ The target is chosen only when the game is created. It must be a whole number fr
 
 Player names are trimmed. Upper and lower case do not make two different players. Empty name rows are ignored when they are at the end of the list; a blank in the middle is rejected.
 
+Each player on a new game can pick a deck color and icon. Choosing a color fills in that color's icon, and the icon can be changed. The same color cannot be used twice in one game. Lists, score rows, and the scoreboard show the icon and the color name together, so a deck is not identified by color alone.
+
+The pairs are the ones named on the [official sticker packs](https://dutchblitz.com/products/dutch-blitz-sticker-pack): red carriage, blue plow, yellow pail, green pump, orange hat, navy blue wheelbarrow, pink water can, and purple butter churn. The sticker list spells the yellow symbol "Pale"; the [rules](https://dutchblitz.com/wp-content/uploads/Dutch_Blitz_Directions_Web.pdf) call it a pail. The blue expansion swaps those four symbols across the same colors, but the maker does not publish which symbol lands on which color, so those decks are not a second set of choices. Games saved before this change still open. Those players have no color or icon.
+
 ## Correcting a round
 
 **Fix last round** reloads the card counts so you can change a mistype without retyping the whole table. Saving it recalculates totals and can finish the game or reopen it.
@@ -182,6 +186,7 @@ app/main.py        pages and the sign-in gate
 app/auth.py        Clerk session checks
 app/config.py      environment variables
 app/scoring.py     round score and game-end rules
+app/decks.py       deck colors, icons, and the official pairs
 app/store.py       SQLite, owners, invite links, and claimed seats
 app/views.py       totals and the words on the page
 app/templates/     server-rendered HTML

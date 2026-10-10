@@ -121,6 +121,26 @@ def test_score_sheet_keeps_running_totals_through_a_negative_round_and_a_tie():
     assert view.headline == "Ada and Bo tie with 10"
 
 
+def test_a_saved_deck_is_named_on_the_player():
+    players = [
+        Player(1, "Ada", 1, deck_color="red", deck_icon="wheelbarrow"),
+        Player(2, "Bo", 2),
+    ]
+    game = Game(
+        id=1,
+        target_score=75,
+        status="active",
+        created_at="2026-10-09T18:52:00+00:00",
+        players=players,
+        rounds=[],
+    )
+    view = present(game)
+    assert view.players[0].deck_color == "red"
+    assert view.players[0].deck_icon == "wheelbarrow"
+    assert view.players[0].deck_text == "Red, Wheelbarrow"
+    assert view.players[1].deck_text == ""
+
+
 def test_format_timestamp_noon_midnight_and_offset():
     assert format_timestamp("2026-01-01T00:05:00+00:00") == "Jan 1, 2026, 12:05 AM UTC"
     assert format_timestamp("2026-01-01T12:00:00+00:00") == "Jan 1, 2026, 12:00 PM UTC"

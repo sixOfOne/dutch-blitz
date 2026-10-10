@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.decks import deck_face
 from app.scoring import add_round, outcome
 from app.store import Game
 
@@ -145,6 +146,9 @@ class PlayerView:
     total: int
     total_label: str
     tag: str | None
+    deck_color: str | None = None
+    deck_icon: str | None = None
+    deck_text: str = ""
 
 
 @dataclass
@@ -171,6 +175,7 @@ class GameSummary:
     detail_label: str
     meta_label: str
     active: bool
+    players: list[PlayerView]
 
 
 def present(game: Game) -> GameView:
@@ -217,6 +222,7 @@ def present(game: Game) -> GameView:
             tag = "Lead"
         else:
             tag = None
+        face = deck_face(player.deck_color, player.deck_icon)
         players.append(
             PlayerView(
                 id=player.id,
@@ -225,6 +231,9 @@ def present(game: Game) -> GameView:
                 total=totals[player.name],
                 total_label=format_total(totals[player.name]),
                 tag=tag,
+                deck_color=face.color,
+                deck_icon=face.icon,
+                deck_text=face.text,
             )
         )
     round_count = len(game.rounds)
@@ -258,4 +267,5 @@ def summarize(game: Game, *, viewer_id: str | None = None) -> GameSummary:
             f"{prefix}{view.state_label} · {rounds} · target {view.target_score} · {view.created_label}"
         ),
         active=not view.finished,
+        players=view.players,
     )

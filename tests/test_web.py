@@ -180,6 +180,106 @@ def test_missing_game_page(client):
     assert "Game not found" in response.text
 
 
+def test_player_add_page_offers_colors_and_their_icons(client):
+    page = client.get("/")
+    assert page.status_code == 200
+    assert 'id="player-add"' in page.text
+    assert "Deck color" in page.text
+    assert "Deck icon" in page.text
+    assert "Wheelbarrow" in page.text
+    assert 'xmlns="http://www.w3.org/2000/svg"' in page.text
+    assert 'name="player_color_1" value="red" data-default-icon="carriage" checked' in page.text
+    assert 'name="player_icon_1" value="carriage" checked' in page.text
+    assert 'name="player_color_2" value="blue" data-default-icon="plow" checked' in page.text
+    assert "cdn." not in page.text
+
+
+def test_deck_color_and_icon_show_on_the_scoreboard(client):
+    created = client.post(
+        "/games",
+        data={
+            "target_score": "75",
+            "player_name": ["Ada", "Bo"],
+            "player_color_1": "red",
+            "player_icon_1": "wheelbarrow",
+            "player_color_2": "navy",
+            "player_icon_2": "wheelbarrow",
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303, created.text
+    location = created.headers["location"]
+    page = client.get(location)
+    assert "Red, Wheelbarrow" in page.text
+    assert "Navy blue, Wheelbarrow" in page.text
+    assert page.text.count('data-color="red"') >= 2
+    assert page.text.count('data-icon="wheelbarrow"') >= 3
+    assert 'class="chip deck-red' in page.text
+    assert "<svg" in page.text
+
+    ada_id, bo_id = player_ids(page.text)
+    saved = client.post(
+        f"{location}/rounds",
+        data={
+            f"dutch_{ada_id}": "4",
+            f"blitz_{ada_id}": "0",
+            f"dutch_{bo_id}": "1",
+            f"blitz_{bo_id}": "0",
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    page = client.get(location)
+    assert "Score sheet" in page.text
+    assert page.text.count('data-icon="wheelbarrow"') >= 4
+    assert "Ada leads with 4" in page.text
+
+    home = client.get("/")
+    assert "Ada" in home.text
+    assert 'data-icon="wheelbarrow"' in home.text
+    assert "Red, Wheelbarrow" in home.text
+
+
+def test_same_deck_color_is_rejected_on_the_form(client):
+    rejected = client.post(
+        "/games",
+        data={
+            "target_score": "75",
+            "player_name": ["Ada", "Bo"],
+            "player_color_1": "green",
+            "player_icon_1": "pump",
+            "player_color_2": "green",
+            "player_icon_2": "carriage",
+        },
+        follow_redirects=False,
+    )
+    assert rejected.status_code == 400
+    assert "Green is already chosen" in rejected.text
+    assert 'value="Ada"' in rejected.text
+    assert 'name="player_color_1" value="green" data-default-icon="pump" checked' in rejected.text
+    assert 'name="player_icon_2" value="carriage" checked' in rejected.text
+    assert "Current games" not in client.get("/").text
+
+
+def test_a_color_without_an_icon_uses_the_official_icon(client):
+    created = client.post(
+        "/games",
+        data={
+            "target_score": "75",
+            "player_name": ["Ada", "Bo"],
+            "player_color_1": "yellow",
+            "player_color_2": "orange",
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303, created.text
+    page = client.get(created.headers["location"])
+    assert "Yellow, Pail" in page.text
+    assert "Orange, Hat" in page.text
+    assert 'data-icon="pail"' in page.text
+    assert 'data-icon="hat"' in page.text
+
+
 def test_database_file_is_created_at_the_configured_path(tmp_path):
     path = tmp_path / "nested" / "blitz.sqlite"
     application = create_app(str(path), verifier=FakeVerifier())
