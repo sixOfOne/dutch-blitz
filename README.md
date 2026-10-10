@@ -1,5 +1,7 @@
 # Dutch Blitz
 
+[![CI](https://github.com/sixOfOne/dutch-blitz/actions/workflows/ci.yml/badge.svg)](https://github.com/sixOfOne/dutch-blitz/actions/workflows/ci.yml)
+
 A small score keeper for Dutch Blitz. Open it on a phone at the table, enter each round, and the same games are still there on any other device that can reach this server.
 
 - 2 to 8 players
@@ -35,11 +37,39 @@ uvicorn app.main:app --reload --reload-dir app
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt
 pytest
 ```
 
 The tests cover negative round scores, running totals, the default target and a custom target, the 2-player and 8-player limits, ties, saved history, undo, editing the last round, sign-in enforcement, invite links, deck color and icon, the migration that adds those columns, and that an outsider cannot see a game. Token checks in tests are stubbed, so the suite does not call Clerk.
+
+## Continuous integration
+
+Every pull request, and every push to `main`, runs the [CI workflow](.github/workflows/ci.yml). A failure shows up on the pull request. The workflow has no Clerk keys and no AWS credentials. It does not run `terraform plan` or `terraform apply`, and it does not create resources.
+
+Two checks run in parallel:
+
+- **Python tests** runs the suite on Python 3.11, the version the game-night host installs. pip caches the wheels from `requirements.txt` and `requirements-dev.txt`.
+- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then runs `terraform init -backend=false` and `terraform validate` in `terraform/` and `terraform/backup/` with `enable_aws` false. It parses `ansible/playbook.yml` with `--syntax-check` against `ansible/inventory/syntax-check.yml`, then runs `ansible-lint`. That inventory is only a stand-in. The real one is written on a game night and is gitignored.
+
+A newer push to the same branch cancels the run that is still going, so an outdated commit does not spend the rest of its minutes.
+
+Run the same checks from the repository root. Terraform 1.5 or newer is enough (CI uses 1.16.5). The Ansible tools below install on Python 3.11.
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+
+terraform fmt -check -diff -recursive
+terraform -chdir=terraform init -backend=false -input=false
+terraform -chdir=terraform validate -var=enable_aws=false
+terraform -chdir=terraform/backup init -backend=false -input=false
+terraform -chdir=terraform/backup validate -var=enable_aws=false
+
+pip install 'ansible-core==2.19.14' 'ansible-lint==26.9.0'
+ansible-playbook ansible/playbook.yml --syntax-check -i ansible/inventory/syntax-check.yml
+ansible-lint ansible/playbook.yml --offline
+```
 
 ## Configuration
 
@@ -195,6 +225,7 @@ src/dutch_blitz_host/  game-night CLI (apply, configure, backup, destroy)
 terraform/         EC2 host, destroyed by down
 terraform/backup/  S3 snapshot bucket, kept across nights
 ansible/           install, Caddy, sshd, backup timer
+.github/workflows/ci.yml  tests and static infrastructure checks
 tests/             pytest
 ```
 

@@ -73,13 +73,13 @@
       - "*.pyc"
     file_type: any
     hidden: true
-  register: copied_bytecode
+  register: app_copied_bytecode
 
 - name: Delete copied bytecode
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ copied_bytecode.files }}"
+  loop: "{{ app_copied_bytecode.files }}"
 
 - name: Install application dependencies
   ansible.builtin.pip:
@@ -87,6 +87,7 @@
     virtualenv: "{{ app_root }}/venv"
     virtualenv_command: python3.11 -m venv
     extra_args: --disable-pip-version-check
+  become: true
   become_user: "{{ app_user }}"
 
 - name: Create the configuration directory
