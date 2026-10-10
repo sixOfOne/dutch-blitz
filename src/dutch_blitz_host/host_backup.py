@@ -53,11 +53,20 @@ def backup_database() -> int:
 def restore_database() -> int:
     load_backup_env()
     bucket = _bucket()
-    listing = subprocess.check_output(
+    result = subprocess.run(
         s3_ls_argv(bucket, BACKUP_PREFIX),
         text=True,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
+    # `aws s3 ls` exits 1 with no output when the prefix has no objects yet,
+    # which is the normal state before the first game night's backup.
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
+        print("No score backup in S3 yet.")
+        return 0
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+    listing = result.stdout
     name = latest_backup_name(listing)
     if name is None:
         print("No score backup in S3 yet.")

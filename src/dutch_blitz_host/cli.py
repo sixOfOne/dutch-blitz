@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from dutch_blitz_host.backup import BACKUP_STACK, NIGHT_STACK, destroy_plan
@@ -28,6 +29,9 @@ PLAYBOOK = REPO_ROOT / "ansible" / "playbook.yml"
 SSH_USER = "ec2-user"
 SSH_KEY_DEFAULT = Path.home() / ".ssh" / "neo-atari.pem"
 REMOTE_BACKUP = "sudo /usr/local/bin/dutch-blitz-backup backup"
+SSH_WAIT_TIMEOUT_SECONDS = 300
+SSH_WAIT_INTERVAL_SECONDS = 5
+SSH_PROBE_CONNECT_TIMEOUT_SECONDS = 5
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -129,7 +133,7 @@ def render_aws_inventory(
         f"      ansible_host: {public_ip}\n"
         f"      ansible_user: {SSH_USER}\n"
         f"      ansible_ssh_private_key_file: {ssh_key}\n"
-        "      ansible_python_interpreter: /usr/bin/python3.11\n"
+        "      ansible_python_interpreter: /usr/bin/python3\n"
         '      ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"\n'
         f"      app_hostname: {hostname}\n"
         f"      backup_bucket: {backup_bucket}\n"
@@ -153,6 +157,42 @@ def ssh_argv(host: str, key: Path, remote_command: str) -> list[str]:
 
 def backup_ssh_argv(host: str, key: Path) -> list[str]:
     return ssh_argv(host, key, REMOTE_BACKUP)
+
+
+def ssh_probe_argv(host: str, key: Path) -> list[str]:
+    """A no-op SSH login, used to tell when a new instance accepts the key."""
+    argv = ssh_argv(host, key, "true")
+    return argv[:-2] + ["-o", f"ConnectTimeout={SSH_PROBE_CONNECT_TIMEOUT_SECONDS}"] + argv[-2:]
+
+
+def wait_for_ssh(
+    host: str,
+    key: Path,
+    *,
+    timeout: float = SSH_WAIT_TIMEOUT_SECONDS,
+    interval: float = SSH_WAIT_INTERVAL_SECONDS,
+    run=subprocess.run,
+    sleep=time.sleep,
+    clock=time.monotonic,
+) -> bool:
+    """Retry an SSH login until it succeeds or ``timeout`` seconds pass.
+
+    A freshly launched instance refuses port 22 for a short while, and then
+    cloud-init still has to install the authorized key.
+    """
+    argv = ssh_probe_argv(host, key)
+    deadline = clock() + timeout
+    attempt = 0
+    while True:
+        attempt += 1
+        result = run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode == 0:
+            print(f"SSH is ready on {host} (attempt {attempt}).")
+            return True
+        if clock() + interval > deadline:
+            return False
+        print(f"Waiting for SSH on {host} (attempt {attempt})...")
+        sleep(interval)
 
 
 def ansible_argv(inventory: Path) -> list[str]:
@@ -310,6 +350,14 @@ def cmd_up(*, do_init: bool) -> int:
     code = cmd_terraform(NIGHT_DIR, action="apply", do_init=do_init, var_file=TFVARS)
     if code != 0:
         return code
+    ip, _hostname, _bucket = require_aws_outputs(terraform_outputs(NIGHT_DIR))
+    if not wait_for_ssh(ip, SSH_KEY_DEFAULT):
+        print(
+            f"SSH on {ip} did not accept a login within {SSH_WAIT_TIMEOUT_SECONDS} seconds. "
+            "When it does, run: PYTHONPATH=src python3 -m dutch_blitz_host configure",
+            file=sys.stderr,
+        )
+        return 1
     code = cmd_configure(ssh_key=str(SSH_KEY_DEFAULT), dry_run=False)
     if code != 0:
         return code

@@ -20,6 +20,8 @@ from dutch_blitz_host.cli import (
     build_parser,
     parse_tfvars,
     render_aws_inventory,
+    ssh_probe_argv,
+    wait_for_ssh,
 )
 from dutch_blitz_host.envfile import (
     ENV_FILE_MODE,
@@ -217,3 +219,56 @@ def test_backup_database_noop_when_the_file_is_missing(tmp_path, monkeypatch, ca
 def test_host_backup_usage():
     assert host_backup.main([]) == 2
     assert host_backup.main(["nope"]) == 2
+
+
+class _Result:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_ssh_probe_is_a_batch_login_with_a_connect_timeout():
+    argv = ssh_probe_argv("203.0.113.10", "/k.pem")
+    assert argv[0] == "ssh"
+    assert "BatchMode=yes" in argv
+    assert any(a.startswith("ConnectTimeout=") for a in argv)
+    assert argv[-2:] == ["ec2-user@203.0.113.10", "true"]
+
+
+def test_wait_for_ssh_retries_until_the_login_succeeds():
+    codes = iter([255, 255, 0])
+    calls = []
+    clock = _FakeClock()
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return _Result(next(codes))
+
+    assert wait_for_ssh("203.0.113.10", "/k.pem", timeout=60, interval=5,
+                        run=run, sleep=clock.sleep, clock=clock)
+    assert len(calls) == 3
+    assert clock.now == 10
+
+
+def test_wait_for_ssh_gives_up_after_the_timeout():
+    clock = _FakeClock()
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return _Result(255)
+
+    assert not wait_for_ssh("203.0.113.10", "/k.pem", timeout=20, interval=5,
+                            run=run, sleep=clock.sleep, clock=clock)
+    assert clock.now <= 20
+    assert len(calls) == 5
