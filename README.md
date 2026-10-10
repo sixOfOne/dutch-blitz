@@ -50,11 +50,11 @@ Every pull request, and every push to `main`, runs the [CI workflow](.github/wor
 Two checks run in parallel:
 
 - **Python tests** runs the suite on Python 3.11, the version the game-night host installs. pip caches the wheels from `requirements.txt` and `requirements-dev.txt`.
-- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then runs `terraform init -backend=false` and `terraform validate` in `terraform/` and `terraform/backup/` with `enable_aws` false. It parses `ansible/playbook.yml` with `--syntax-check` against `ansible/inventory/syntax-check.yml`, then runs `ansible-lint`. That inventory is only a stand-in. The real one is written on a game night and is gitignored.
+- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then runs `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, and `terraform/iam-bot/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. It parses `ansible/playbook.yml` with `--syntax-check` against `ansible/inventory/syntax-check.yml`, then runs `ansible-lint`. That inventory is only a stand-in. The real one is written on a game night and is gitignored.
 
 A newer push to the same branch cancels the run that is still going, so an outdated commit does not spend the rest of its minutes.
 
-Run the same checks from the repository root. Terraform 1.5 or newer is enough (CI uses 1.16.5). The Ansible tools below install on Python 3.11.
+Run the same checks from the repository root. Terraform 1.10 or newer is required, because the S3 backend locks state with `use_lockfile` (CI uses 1.16.5). The Ansible tools below install on Python 3.11.
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
@@ -65,6 +65,10 @@ terraform -chdir=terraform init -backend=false -input=false
 terraform -chdir=terraform validate -var=enable_aws=false
 terraform -chdir=terraform/backup init -backend=false -input=false
 terraform -chdir=terraform/backup validate -var=enable_aws=false
+terraform -chdir=terraform/state init -backend=false -input=false
+terraform -chdir=terraform/state validate -var=enable_aws=false
+terraform -chdir=terraform/iam-bot init -backend=false -input=false
+terraform -chdir=terraform/iam-bot validate -var=enable_aws=false
 
 pip install 'ansible-core==2.19.14' 'ansible-lint==26.9.0'
 ansible-playbook ansible/playbook.yml --syntax-check -i ansible/inventory/syntax-check.yml
@@ -129,7 +133,7 @@ Anyone who has claimed a seat can enter a round. Only the owner can undo a round
 
 A night is one `t3.small` in `us-east-2` (Amazon Linux 2023) for a few hours, then the instance is deleted. Scores are copied to an S3 bucket that stays. Three hours is about **$0.10**: the instance is about $0.021 an hour, and the disk and a small SQLite upload add a few cents. The bucket is pennies a month and is not part of that teardown.
 
-From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.5 or newer and `ansible-playbook` on your PATH. No extra Python package is required. The controller uses the standard library.
+From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.10 or newer and `ansible-playbook` on your PATH. No extra Python package is required. The controller uses the standard library. 1.10 is the first release that locks S3 state with `use_lockfile`. CI uses 1.16.5.
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
@@ -166,12 +170,64 @@ PYTHONPATH=src python3 -m dutch_blitz_host down
 
 `down` uploads a final consistent snapshot (Python's `sqlite3` backup API), then destroys the instance. The S3 bucket is a separate Terraform state with `prevent_destroy`, so this command leaves it in place. A timer on the host also uploads about every 15 minutes. `PYTHONPATH=src python3 -m dutch_blitz_host backup` uploads once without tearing the host down.
 
+State for every root is an object in one S3 bucket, shared by the Mac and the Linux assistant. The bucket name is not in git. Copy `terraform/backend.hcl.example` to `terraform/backend.hcl` and follow [docs/remote-state.md](docs/remote-state.md) once: bootstrap `terraform/state`, then `terraform init -migrate-state -backend-config=backend.hcl` for each root that already has a local `terraform.tfstate`, then `terraform state list`. Keep the old local state files as backups. `up` and `down` pass that backend file into `terraform init`. CI keeps using `init -backend=false` and does not contact the bucket.
+
 On AWS, before the first `up`:
 
-- Use credentials Terraform can see (environment or `~/.aws`).
+- Use credentials Terraform can see (environment or `~/.aws`). The Mac keeps using your credentials. The Linux assistant uses the bot user below, not yours.
 - The account needs a default VPC in `us-east-2`.
-- Create an EC2 key pair named `neo-atari` in `us-east-2` if it is not already there. Key pairs are regional. The private key this CLI uses is `~/.ssh/neo-atari.pem`.
+- Create an EC2 key pair named `neo-atari` in `us-east-2` if it is not already there. Key pairs are regional. The private key this CLI uses is `~/.ssh/neo-atari.pem`. The assistant needs its own copy of that private key, mode `0600`, and that file is not committed.
 - Pick a bucket name that is free worldwide. The first `up` creates it. Later nights reuse it.
+- If the assistant also runs `up` or `down`, add that machine's public IP as a `/32` to `ssh_ingress_cidrs` in the gitignored `terraform/terraform.tfvars`. `ssh_ingress_cidr` stays the first machine. HTTP and HTTPS stay open.
+
+### Credentials for the Linux assistant
+
+The assistant's AWS identity is an IAM user named `grok-bot-dutch-blitz`. You create the user by applying `terraform/iam-bot` with your own credentials. The policy and the $10 budget are explained in [docs/bot-iam.md](docs/bot-iam.md). The policy JSON you can read without applying is [docs/grok-bot-dutch-blitz-policy.json](docs/grok-bot-dutch-blitz-policy.json). Placeholders in that file are filled from the gitignored tfvars at apply time. Do not put the real account id, bucket names, hosted zone id, or alert email in the repo.
+
+Terraform does not create the access key. An `aws_iam_access_key` resource would write the secret into the state file. After the user exists, create the key yourself and store it in the assistant's secret store (its environment, or a `0600` credentials file on that machine). It never goes in git, in `terraform.tfvars`, or in `backend.hcl`.
+
+Console: IAM, Users, `grok-bot-dutch-blitz`, Security credentials, Create access key. Choose the CLI use case. The secret is shown once.
+
+CLI, with your credentials, not the bot's:
+
+```bash
+aws iam create-access-key --user-name grok-bot-dutch-blitz
+```
+
+On the assistant, point Terraform and the AWS CLI at that key. A credentials file is the usual place:
+
+```bash
+mkdir -p ~/.aws
+chmod 700 ~/.aws
+# ~/.aws/credentials is mode 0600. This profile is the bot, not your admin user.
+aws configure --profile grok-bot-dutch-blitz
+export AWS_PROFILE=grok-bot-dutch-blitz
+export AWS_DEFAULT_REGION=us-east-2
+aws sts get-caller-identity
+```
+
+`get-caller-identity` should print the bot user. Then `PYTHONPATH=src python3 -m dutch_blitz_host up` uses that profile. Your Mac does not set this profile. You keep applying `terraform/state` and `terraform/iam-bot` with your own user. The bot is denied those actions.
+
+An IAM user can hold two access keys. Rotate without a gap:
+
+1. Create a second key with the command above.
+2. Put the new key in the assistant's secret store and restart whatever holds the old environment.
+3. On the assistant, `aws sts get-caller-identity` and a `dutch_blitz_host apply --dry-run` should succeed with the new key.
+4. Disable the old key, confirm the assistant still works, then delete it:
+
+```bash
+aws iam update-access-key \
+  --user-name grok-bot-dutch-blitz \
+  --access-key-id AKIA_OLD_KEY_ID \
+  --status Inactive
+aws iam delete-access-key \
+  --user-name grok-bot-dutch-blitz \
+  --access-key-id AKIA_OLD_KEY_ID
+```
+
+Those two commands use your credentials. The bot policy has no `iam:CreateAccessKey`, `iam:UpdateAccessKey`, or `iam:DeleteAccessKey`, so a leaked bot key cannot rotate itself or mint another one. To revoke immediately, run the `Inactive` command, or delete the key, or delete the user in the IAM console. `down` on the Mac with your own credentials still works after the bot key is dead. The state is in S3 either way.
+
+The budget email is a variable in `terraform/iam-bot/terraform.tfvars`. Confirm AWS's subscription message or the $10 alarm never sends.
 
 To retire the bucket, edit `terraform/backup/main.tf` and remove the `prevent_destroy = true` line. Empty the bucket, then destroy only that stack:
 
@@ -181,7 +237,7 @@ terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
 
 `down` never runs that command. `--skip-backup` exists for a host that is already gone; scores saved after the last upload are not copied.
 
-`terraform.tfvars`, Terraform state, generated files in `ansible/inventory/` (except `syntax-check.yml`), `.env`, and `*.pem` files are gitignored. The example tfvars file has placeholders only.
+`terraform.tfvars`, `backend.hcl`, Terraform state, generated files in `ansible/inventory/` (except `syntax-check.yml`), `.env`, and `*.pem` files are gitignored. The example tfvars and `backend.hcl.example` have placeholders only.
 
 ## Rules encoded here
 
@@ -222,8 +278,12 @@ app/views.py       totals and the words on the page
 app/templates/     server-rendered HTML
 app/static/        CSS, score form, and Clerk cookie refresh
 src/dutch_blitz_host/  game-night CLI (apply, configure, backup, destroy)
-terraform/         EC2 host, destroyed by down
+terraform/         EC2 host, destroyed by down; S3 backend via backend.hcl
 terraform/backup/  S3 snapshot bucket, kept across nights
+terraform/state/   bootstrap bucket for Terraform state (you apply this)
+terraform/iam-bot/ bot user, least-privilege policy, and $10 budget (you apply this)
+docs/remote-state.md  one-time migration from local tfstate
+docs/bot-iam.md    what the bot may do, and what could not be scoped tightly
 ansible/           install, Caddy, sshd, backup timer
 .github/workflows/ci.yml  tests and static infrastructure checks
 tests/             pytest

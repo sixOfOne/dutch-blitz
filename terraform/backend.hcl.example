@@ -1,0 +1,14 @@
+# Copy to terraform/backend.hcl. That copy is gitignored.
+#
+# A backend block cannot refer to variables. Terraform reads it before
+# the variable files exist, which is why the bucket name lives here
+# instead of in terraform.tfvars. Every root shares this one file.
+# Each root's own backend block sets a different key so the states
+# do not overwrite each other.
+#
+# Use the same bucket name as state_bucket_name in
+# terraform/state/terraform.tfvars. us-east-2 is not a secret; it is
+# in this file so the bucket and the region are configured together.
+
+bucket = "dutch-blitz-tfstate-replace-me"
+region = "us-east-2"

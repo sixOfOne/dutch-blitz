@@ -1,7 +1,9 @@
 # Game-night instance. Destroying this stack does not delete the S3 backup
 # bucket; that bucket lives in terraform/backup with its own state.
+# Both states live in the bucket from terraform/state, not in a local file.
 terraform {
-  required_version = ">= 1.5.0"
+  # 1.10 added S3 lock files (use_lockfile). CI runs 1.16.5.
+  required_version = ">= 1.10.0"
 
   required_providers {
     aws = {
@@ -12,6 +14,18 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.2"
     }
+  }
+
+  # Partial backend. bucket and region come from terraform/backend.hcl
+  # (gitignored) via -backend-config. They cannot be variables: Terraform
+  # reads this block before variable values exist. The key is local to
+  # this root so an apply here cannot overwrite the backup bucket's state.
+  # use_lockfile is the lock. DynamoDB is not used. encrypt matches the
+  # state bucket's AES256 default. Migration: docs/remote-state.md.
+  backend "s3" {
+    key          = "dutch-blitz/game-night/terraform.tfstate"
+    use_lockfile = true
+    encrypt      = true
   }
 }
 
@@ -62,6 +76,13 @@ resource "null_resource" "game_night_checks" {
         )
       )
       error_message = "enable_aws requires key_name, a CIDR in ssh_ingress_cidr, and a lowercase backup_bucket_name."
+    }
+
+    precondition {
+      condition = alltrue([
+        for cidr in var.ssh_ingress_cidrs : can(cidrhost(cidr, 0))
+      ])
+      error_message = "Every entry in ssh_ingress_cidrs must be a CIDR, such as a public IP with /32."
     }
 
     precondition {
@@ -159,7 +180,7 @@ resource "aws_security_group_rule" "ssh" {
   from_port         = 22
   to_port           = 22
   protocol          = "tcp"
-  cidr_blocks       = [var.ssh_ingress_cidr]
+  cidr_blocks       = concat([var.ssh_ingress_cidr], var.ssh_ingress_cidrs)
   description       = "SSH"
 }
 

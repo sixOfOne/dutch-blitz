@@ -1,0 +1,342 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DescribeEc2InUsEast2",
+      "Effect": "Allow",
+      "Action": "ec2:Describe*",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "RunTaggedGameInstanceAndVolume",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-2:000000000000:instance/*",
+        "arn:aws:ec2:us-east-2:000000000000:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2",
+          "aws:RequestTag/Project": "dutch-blitz"
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesOnSupportingResources",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-2:000000000000:network-interface/*",
+        "arn:aws:ec2:us-east-2:000000000000:security-group/*",
+        "arn:aws:ec2:us-east-2:000000000000:subnet/*",
+        "arn:aws:ec2:us-east-2::image/*",
+        "arn:aws:ec2:us-east-2:000000000000:image/*",
+        "arn:aws:ec2:us-east-2::snapshot/*",
+        "arn:aws:ec2:us-east-2:000000000000:key-pair/neo-atari"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "CreateGameSecurityGroup",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSecurityGroup",
+      "Resource": [
+        "arn:aws:ec2:us-east-2:000000000000:security-group/*",
+        "arn:aws:ec2:us-east-2:000000000000:vpc/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteTaggedGameInstanceAndSecurityGroup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:TerminateInstances",
+        "ec2:DeleteSecurityGroup"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-2:000000000000:instance/*",
+        "arn:aws:ec2:us-east-2:000000000000:security-group/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2",
+          "ec2:ResourceTag/Project": "dutch-blitz"
+        }
+      }
+    },
+    {
+      "Sid": "ManageRulesOnTaggedGameSecurityGroup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:ModifySecurityGroupRules",
+        "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsEgress"
+      ],
+      "Resource": "arn:aws:ec2:us-east-2:000000000000:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2",
+          "ec2:ResourceTag/Project": "dutch-blitz"
+        }
+      }
+    },
+    {
+      "Sid": "TagGameNightResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags",
+        "ec2:DeleteTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-2:000000000000:instance/*",
+        "arn:aws:ec2:us-east-2:000000000000:volume/*",
+        "arn:aws:ec2:us-east-2:000000000000:security-group/*",
+        "arn:aws:ec2:us-east-2:000000000000:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "AdjustInstanceAndAttachProfile",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:ModifyInstanceAttribute",
+        "ec2:AssociateIamInstanceProfile",
+        "ec2:DisassociateIamInstanceProfile",
+        "ec2:ReplaceIamInstanceProfileAssociation"
+      ],
+      "Resource": "arn:aws:ec2:us-east-2:000000000000:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ManageGameRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:GetRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::000000000000:role/dutch-blitz-game"
+    },
+    {
+      "Sid": "ManageGameInstanceProfile",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:TagInstanceProfile",
+        "iam:UntagInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::000000000000:instance-profile/dutch-blitz-game",
+        "arn:aws:iam::000000000000:role/dutch-blitz-game"
+      ]
+    },
+    {
+      "Sid": "PassGameRoleToEc2Only",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::000000000000:role/dutch-blitz-game",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "ChangeOnlyBlitzARecord",
+      "Effect": "Allow",
+      "Action": "route53:ChangeResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE",
+      "Condition": {
+        "ForAllValues:StringLike": {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+            "blitz.*"
+          ]
+        },
+        "ForAllValues:StringEquals": {
+          "route53:ChangeResourceRecordSetsRecordTypes": [
+            "A"
+          ],
+          "route53:ChangeResourceRecordSetsActions": [
+            "CREATE",
+            "UPSERT",
+            "DELETE"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyClerkAndMailRecordChanges",
+      "Effect": "Deny",
+      "Action": "route53:ChangeResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE",
+      "Condition": {
+        "ForAnyValue:StringLike": {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+            "clerk.*",
+            "accounts.*",
+            "clkmail.*",
+            "clk._domainkey.*",
+            "clk2._domainkey.*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyZoneDelegationAndCnameChanges",
+      "Effect": "Deny",
+      "Action": "route53:ChangeResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "route53:ChangeResourceRecordSetsRecordTypes": [
+            "NS",
+            "SOA",
+            "CNAME"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadGameHostedZone",
+      "Effect": "Allow",
+      "Action": [
+        "route53:GetHostedZone",
+        "route53:ListResourceRecordSets",
+        "route53:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE"
+    },
+    {
+      "Sid": "ListHostedZonesByName",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:ListHostedZonesByName"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PollRoute53ChangeStatus",
+      "Effect": "Allow",
+      "Action": "route53:GetChange",
+      "Resource": "arn:aws:route53:::change/*"
+    },
+    {
+      "Sid": "ReadAndWriteBackupObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::dutch-blitz-scores-replace-me/*"
+    },
+    {
+      "Sid": "ManageBackupBucketConfiguration",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:GetBucketTagging",
+        "s3:PutBucketTagging",
+        "s3:GetBucketVersioning",
+        "s3:PutBucketVersioning",
+        "s3:GetEncryptionConfiguration",
+        "s3:PutEncryptionConfiguration",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:GetObjectLockConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:s3:::dutch-blitz-scores-replace-me",
+        "arn:aws:s3:::dutch-blitz-scores-replace-me/*"
+      ]
+    },
+    {
+      "Sid": "ReadWriteGameNightState",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::dutch-blitz-tfstate-replace-me/dutch-blitz/game-night/terraform.tfstate",
+        "arn:aws:s3:::dutch-blitz-tfstate-replace-me/dutch-blitz/backup/terraform.tfstate"
+      ]
+    },
+    {
+      "Sid": "LockGameNightState",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::dutch-blitz-tfstate-replace-me/dutch-blitz/game-night/terraform.tfstate.tflock",
+        "arn:aws:s3:::dutch-blitz-tfstate-replace-me/dutch-blitz/backup/terraform.tfstate.tflock"
+      ]
+    },
+    {
+      "Sid": "ListStateBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::dutch-blitz-tfstate-replace-me"
+    },
+    {
+      "Sid": "ReadCostExplorer",
+      "Effect": "Allow",
+      "Action": "ce:GetCostAndUsage",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ViewMonthlyBudget",
+      "Effect": "Allow",
+      "Action": "budgets:ViewBudget",
+      "Resource": "arn:aws:budgets::000000000000:budget/dutch-blitz-monthly"
+    }
+  ]
+}

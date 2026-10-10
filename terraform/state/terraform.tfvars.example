@@ -1,0 +1,7 @@
+# Copy to terraform/state/terraform.tfvars (gitignored) and edit.
+# Apply this stack yourself, with your own AWS credentials, once.
+# The Linux assistant does not apply it. See docs/remote-state.md.
+
+enable_aws        = true
+aws_region        = "us-east-2"
+state_bucket_name = "dutch-blitz-tfstate-replace-me"
