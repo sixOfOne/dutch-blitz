@@ -18,3 +18,21 @@ data/
 *.sqlite-wal
 *.sqlite-shm
 *.db
+
+# Terraform (keep terraform.tfvars.example tracked)
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+terraform.tfvars
+*.auto.tfvars
+
+# Generated Ansible inventory (public IP and local PEM path)
+*.retry
+ansible/inventory/aws.yml

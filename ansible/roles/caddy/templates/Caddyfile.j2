@@ -1,0 +1,9 @@
+{% if acme_email | length > 0 %}
+{
+	email {{ acme_email }}
+}
+{% endif %}
+{{ app_hostname }} {
+	encode gzip
+	reverse_proxy 127.0.0.1:8000
+}

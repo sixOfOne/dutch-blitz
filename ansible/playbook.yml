@@ -1,0 +1,74 @@
+---
+- name: Configure the Dutch Blitz host
+  hosts: dutch_blitz_aws
+  become: true
+  vars:
+    app_user: dutchblitz
+    app_root: /opt/dutch-blitz
+    db_dir: /var/lib/dutch-blitz
+    db_path: /var/lib/dutch-blitz/dutch_blitz.sqlite
+    backup_prefix: dutch-blitz
+  roles:
+    - role: sshd
+    - role: app
+    - role: caddy
+    - role: backup
+  tasks:
+    - name: Reload systemd units
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Stop the backup timer while restoring scores
+      ansible.builtin.systemd:
+        name: dutch-blitz-backup.timer
+        state: stopped
+
+    - name: Stop the app before restoring scores
+      ansible.builtin.systemd:
+        name: dutch-blitz
+        state: stopped
+
+    # Upload first when this host already has a database, so a second
+    # configure does not replace a newer local file with an older snapshot.
+    # A fresh host has no file; that upload is a no-op and restore fetches S3.
+    - name: Upload the local score database before restore
+      ansible.builtin.command:
+        cmd: /usr/local/bin/dutch-blitz-backup backup
+      register: score_backup
+      changed_when: "'Uploaded' in score_backup.stdout"
+
+    - name: Restore the latest score backup
+      ansible.builtin.command:
+        cmd: /usr/local/bin/dutch-blitz-backup restore
+      register: score_restore
+      changed_when: "'Restored' in score_restore.stdout"
+
+    - name: Give the app user the score database
+      ansible.builtin.file:
+        path: "{{ db_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0750"
+        recurse: true
+
+    - name: Start the score tracker
+      ansible.builtin.systemd:
+        name: dutch-blitz
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+    - name: Start Caddy
+      ansible.builtin.systemd:
+        name: caddy
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+    - name: Start the backup timer
+      ansible.builtin.systemd:
+        name: dutch-blitz-backup.timer
+        state: restarted
+        enabled: true
+        daemon_reload: true

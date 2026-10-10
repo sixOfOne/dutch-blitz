@@ -1,0 +1,65 @@
+---
+- name: Download Caddy
+  ansible.builtin.get_url:
+    url: https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_linux_amd64.tar.gz
+    dest: /tmp/caddy_2.11.7_linux_amd64.tar.gz
+    mode: "0644"
+    checksum: sha512:a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7
+
+- name: Create the Caddy unpack directory
+  ansible.builtin.file:
+    path: /tmp/caddy-unpack
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Unpack Caddy
+  ansible.builtin.unarchive:
+    src: /tmp/caddy_2.11.7_linux_amd64.tar.gz
+    dest: /tmp/caddy-unpack
+    remote_src: true
+    creates: /tmp/caddy-unpack/caddy
+
+- name: Install the Caddy binary
+  ansible.builtin.copy:
+    src: /tmp/caddy-unpack/caddy
+    dest: /usr/local/bin/caddy
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Restore SELinux context on the Caddy binary
+  ansible.builtin.command:
+    cmd: restorecon -v /usr/local/bin/caddy
+  register: caddy_restorecon
+  changed_when: >-
+    'Relabeled' in (
+      (caddy_restorecon.stdout | default('')) ~ (caddy_restorecon.stderr | default(''))
+    )
+  failed_when: false
+
+- name: Create the Caddy configuration directory
+  ansible.builtin.file:
+    path: /etc/caddy
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the Caddy service
+  ansible.builtin.template:
+    src: caddy.service.j2
+    dest: /etc/systemd/system/caddy.service
+    owner: root
+    group: root
+    mode: "0644"

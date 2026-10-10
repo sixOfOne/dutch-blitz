@@ -1,0 +1,32 @@
+---
+- name: Install the backup settings
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: /etc/dutch-blitz/backup.env
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the backup command
+  ansible.builtin.copy:
+    src: dutch-blitz-backup
+    dest: /usr/local/bin/dutch-blitz-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the backup service
+  ansible.builtin.template:
+    src: dutch-blitz-backup.service.j2
+    dest: /etc/systemd/system/dutch-blitz-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the backup timer
+  ansible.builtin.template:
+    src: dutch-blitz-backup.timer.j2
+    dest: /etc/systemd/system/dutch-blitz-backup.timer
+    owner: root
+    group: root
+    mode: "0644"

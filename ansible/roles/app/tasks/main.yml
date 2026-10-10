@@ -1,0 +1,133 @@
+---
+- name: Install host packages
+  ansible.builtin.dnf:
+    name:
+      - python3.11
+      - python3.11-pip
+      - awscli
+      - sqlite
+    state: present
+
+- name: Create the application user
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ app_root }}"
+    create_home: false
+
+- name: Create application directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0755"
+  loop:
+    - "{{ app_root }}"
+    - "{{ app_root }}/app"
+    - "{{ app_root }}/hostpkg"
+    - "{{ db_dir }}"
+
+- name: Tighten the score database directory
+  ansible.builtin.file:
+    path: "{{ db_dir }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0750"
+
+- name: Copy the application tree
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../app/"
+    dest: "{{ app_root }}/app/"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Copy Python dependencies
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../requirements.txt"
+    dest: "{{ app_root }}/requirements.txt"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0644"
+
+- name: Copy the host backup package
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../src/dutch_blitz_host/"
+    dest: "{{ app_root }}/hostpkg/dutch_blitz_host/"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Remove copied bytecode
+  ansible.builtin.find:
+    paths:
+      - "{{ app_root }}/app"
+      - "{{ app_root }}/hostpkg"
+    patterns:
+      - __pycache__
+      - "*.pyc"
+    file_type: any
+    hidden: true
+  register: copied_bytecode
+
+- name: Delete copied bytecode
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ copied_bytecode.files }}"
+
+- name: Install application dependencies
+  ansible.builtin.pip:
+    requirements: "{{ app_root }}/requirements.txt"
+    virtualenv: "{{ app_root }}/venv"
+    virtualenv_command: python3.11 -m venv
+    extra_args: --disable-pip-version-check
+  become_user: "{{ app_user }}"
+
+- name: Create the configuration directory
+  ansible.builtin.file:
+    path: /etc/dutch-blitz
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Require Clerk keys from the controller environment
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'CLERK_PUBLISHABLE_KEY') | length > 0
+      - lookup('env', 'CLERK_SECRET_KEY') | length > 0
+      - (lookup('env', 'CLERK_DEV_BYPASS') | default('', true) | lower) not in ['1', 'true', 'yes', 'on']
+    fail_msg: >-
+      Set CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in the controller
+      environment, and leave CLERK_DEV_BYPASS off.
+  no_log: true
+
+- name: Write the Clerk environment file
+  ansible.builtin.copy:
+    dest: /etc/dutch-blitz/env
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      DUTCH_BLITZ_DB_PATH={{ db_path }}
+      DUTCH_BLITZ_HOST=127.0.0.1
+      DUTCH_BLITZ_PORT=8000
+      CLERK_PUBLISHABLE_KEY={{ lookup('env', 'CLERK_PUBLISHABLE_KEY') }}
+      CLERK_SECRET_KEY={{ lookup('env', 'CLERK_SECRET_KEY') }}
+      CLERK_DEV_BYPASS=0
+      CLERK_AUTHORIZED_PARTIES=https://{{ app_hostname }}
+  no_log: true
+
+- name: Install the score tracker service
+  ansible.builtin.template:
+    src: dutch-blitz.service.j2
+    dest: /etc/systemd/system/dutch-blitz.service
+    owner: root
+    group: root
+    mode: "0644"

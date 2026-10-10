@@ -1,0 +1,9 @@
+#!/bin/bash
+# Upload or restore a consistent SQLite snapshot. Clerk keys are not read.
+set -euo pipefail
+set -a
+# shellcheck disable=SC1091
+. /etc/dutch-blitz/backup.env
+set +a
+export PYTHONPATH=/opt/dutch-blitz/hostpkg
+exec /opt/dutch-blitz/venv/bin/python -m dutch_blitz_host.host_backup "$@"

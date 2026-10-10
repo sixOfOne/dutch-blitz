@@ -59,7 +59,7 @@ Copy `.env.example` to `.env` if you want the variables loaded automatically. `p
 | `CLERK_DEV_BYPASS` | off | Set to `1`, `true`, `yes`, or `on` only on a machine that is not shared. |
 | `CLERK_DEV_USER_ID` | `dev-user` | The single account used while the bypass is on. |
 
-The database file is gitignored. These variables are the hook for a later deploy; this repository does not add cloud infrastructure.
+The database file is gitignored. A game night on EC2 uses the same variables. `CLERK_DEV_BYPASS` stays off on that host.
 
 ## Sign-in
 
@@ -95,6 +95,51 @@ The owner shares a game with a link. This does not look people up by email, so i
 
 Anyone who has claimed a seat can enter a round. Only the owner can undo a round, fix the last round, create or change the invite, or remove someone. There is no separate delete-game action.
 
+## Game night on EC2
+
+A night is one `t3.small` in `us-east-2` (Amazon Linux 2023) for a few hours, then the instance is deleted. Scores are copied to an S3 bucket that stays. Three hours is about **$0.10**: the instance is about $0.021 an hour, and the disk and a small SQLite upload add a few cents. The bucket is pennies a month and is not part of that teardown.
+
+From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.5 or newer and `ansible-playbook` on your PATH. No extra Python package is required. The controller uses the standard library.
+
+```bash
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+```
+
+Edit the copy: set `ssh_ingress_cidr` to your public IP as a `/32`, and set `backup_bucket_name` to a globally unique name. Leave `enable_aws = true` until the night is over. Put `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the environment or in the gitignored `.env`. `CLERK_DEV_BYPASS` must be off or `up` refuses to run.
+
+```bash
+PYTHONPATH=src python3 -m dutch_blitz_host up
+```
+
+`up` creates the backup bucket if needed, starts the instance, installs the app, restores the latest snapshot, and prints an `https://` URL. Send that URL to the table. Caddy serves it with a certificate. With `domain` left empty, the name is `<public-ipv4>.sslip.io`, so you do not buy a domain. If this host already has a score file, configure uploads that file before the restore so a second configure does not roll the night backward. If the first S3 call fails, the instance role can take a few seconds to become usable; run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again.
+
+When the night is over:
+
+```bash
+PYTHONPATH=src python3 -m dutch_blitz_host down
+```
+
+`down` uploads a final consistent snapshot (Python's `sqlite3` backup API), then destroys the instance. The S3 bucket is a separate Terraform state with `prevent_destroy`, so this command leaves it in place. A timer on the host also uploads about every 15 minutes. `PYTHONPATH=src python3 -m dutch_blitz_host backup` uploads once without tearing the host down.
+
+Before phones can sign in, open the [Clerk dashboard](https://dashboard.clerk.com) for this application and add the printed origin, for example `https://203.0.113.10.sslip.io`, as an allowed origin. A production instance also needs that hostname under Domains. Each new instance gets a new public IP, so a sslip.io name changes every night and the allowed origin has to be updated to match. Set `domain` in `terraform.tfvars` when you want a stable hostname. This stack does not create DNS records: point that name's A record at the instance's public IP, then run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again if the certificate was requested before DNS answered.
+
+On AWS, before the first `up`:
+
+- Use credentials Terraform can see (environment or `~/.aws`).
+- The account needs a default VPC in `us-east-2`.
+- Create an EC2 key pair named `neo-atari` in `us-east-2` if it is not already there. Key pairs are regional. The private key this CLI uses is `~/.ssh/neo-atari.pem`.
+- Pick a bucket name that is free worldwide. The first `up` creates it. Later nights reuse it.
+
+To retire the bucket, edit `terraform/backup/main.tf` and remove the `prevent_destroy = true` line. Empty the bucket, then destroy only that stack:
+
+```bash
+terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
+```
+
+`down` never runs that command. `--skip-backup` exists for a host that is already gone; scores saved after the last upload are not copied.
+
+`terraform.tfvars`, Terraform state, and `ansible/inventory/aws.yml` are gitignored. The example tfvars file has placeholders only.
+
 ## Rules encoded here
 
 Each round, for every player:
@@ -128,6 +173,10 @@ app/store.py       SQLite, owners, invite links, and claimed seats
 app/views.py       totals and the words on the page
 app/templates/     server-rendered HTML
 app/static/        CSS, score form, and Clerk cookie refresh
+src/dutch_blitz_host/  game-night CLI (apply, configure, backup, destroy)
+terraform/         EC2 host, destroyed by down
+terraform/backup/  S3 snapshot bucket, kept across nights
+ansible/           install, Caddy, sshd, backup timer
 tests/             pytest
 ```
 
