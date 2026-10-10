@@ -15,3 +15,7 @@ class ScoringError(AppError):
 
 class NotFoundError(AppError):
     """The requested game does not exist."""
+
+
+class AuthError(AppError):
+    """The request has no usable Clerk session."""

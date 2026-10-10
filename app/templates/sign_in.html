@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Dutch Blitz{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Sign in</h1>
+  {% if clerk.ready %}
+  <p>Sign in to see your games.</p>
+  <div id="clerk-sign-in" class="clerk-mount" data-clerk-sign-in></div>
+  <noscript><p class="banner-warn">Sign-in needs JavaScript.</p></noscript>
+  {% else %}
+  <p>Set <code>CLERK_PUBLISHABLE_KEY</code> and <code>CLERK_SECRET_KEY</code> to turn on sign-in. The README explains how to create a Clerk application and where each key goes.</p>
+  {% endif %}
+</section>
+{% endblock %}

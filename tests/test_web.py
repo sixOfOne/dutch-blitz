@@ -5,6 +5,7 @@ import re
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from tests.fakes import FakeVerifier
 
 
 def start_game(client: TestClient, names: list[str], target: str = "75") -> str:
@@ -181,7 +182,8 @@ def test_missing_game_page(client):
 
 def test_database_file_is_created_at_the_configured_path(tmp_path):
     path = tmp_path / "nested" / "blitz.sqlite"
-    application = create_app(str(path))
+    application = create_app(str(path), verifier=FakeVerifier())
     with TestClient(application) as local_client:
+        local_client.cookies.set("__session", "user:user_test")
         assert local_client.get("/").status_code == 200
     assert path.is_file()

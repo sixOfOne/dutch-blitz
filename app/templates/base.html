@@ -15,21 +15,33 @@
     </style>
   </noscript>
 </head>
-<body>
+<body {% if not signed_in %}data-signed-out{% endif %}>
   <header class="site-header">
     <a class="brand" href="/">Dutch Blitz</a>
-    <nav>
-      <a href="/">Games</a>
-      <a href="/#new-game">New game</a>
-    </nav>
+    {% if signed_in %}
+    <div class="header-actions">
+      <nav>
+        <a href="/">Games</a>
+        <a href="/#new-game">New game</a>
+      </nav>
+      {% if clerk.ready %}
+      <div data-clerk-user-button></div>
+      {% endif %}
+    </div>
+    {% endif %}
   </header>
   <div class="stripe" aria-hidden="true"></div>
+  {% if dev_bypass %}
+  <p class="banner-warn">Development bypass is on. Everyone using this server shares one account. Turn CLERK_DEV_BYPASS off before sharing or deploying.</p>
+  {% endif %}
   <main>
     {% block content %}{% endblock %}
   </main>
   <footer class="site-footer">
     <p>Round score = Dutch cards − 2 × Blitz cards left. The game ends when someone reaches the target. The highest total wins, and a tie shares the win.</p>
   </footer>
+  <script>window.__DUTCH_BLITZ_CLERK__ = {{ clerk | tojson }};</script>
+  <script src="/static/auth.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

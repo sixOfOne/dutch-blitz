@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY,
     target_score INTEGER NOT NULL CHECK (target_score BETWEEN 1 AND 999),
     created_at TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('active', 'finished'))
+    status TEXT NOT NULL CHECK (status IN ('active', 'finished')),
+    owner_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS players (
@@ -86,6 +87,20 @@ class Game:
     created_at: str
     players: list[Player]
     rounds: list[Round]
+    owner_id: str | None = None
+
+
+MAX_OWNER_ID_LENGTH = 200
+
+
+def require_owner_id(owner_id: str) -> str:
+    """Reject a missing owner before a game is written or read for that account."""
+    if not isinstance(owner_id, str):
+        raise ValueError("owner_id is required")
+    cleaned = owner_id.strip()
+    if not cleaned or len(cleaned) > MAX_OWNER_ID_LENGTH:
+        raise ValueError("owner_id is required")
+    return cleaned
 
 
 def utc_now() -> str:
@@ -104,18 +119,26 @@ class GameStore:
             path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
 
-    def create_game(self, names: list[str], target_score: int = DEFAULT_TARGET) -> int:
+    def create_game(
+        self,
+        names: list[str],
+        target_score: int = DEFAULT_TARGET,
+        *,
+        owner_id: str,
+    ) -> int:
+        owner = require_owner_id(owner_id)
         cleaned = validate_players(names)
         target = validate_target(target_score)
         with self._transaction() as conn:
             try:
                 cursor = conn.execute(
                     """
-                    INSERT INTO games (target_score, created_at, status)
-                    VALUES (?, ?, 'active')
+                    INSERT INTO games (target_score, created_at, status, owner_id)
+                    VALUES (?, ?, 'active', ?)
                     """,
-                    (target, utc_now()),
+                    (target, utc_now(), owner),
                 )
                 game_id = cursor.lastrowid
                 if game_id is None:
@@ -134,19 +157,34 @@ class GameStore:
                 ) from exc
         return int(game_id)
 
-    def get_game(self, game_id: int) -> Game | None:
+    def get_game(self, game_id: int, owner_id: str) -> Game | None:
+        owner = require_owner_id(owner_id)
         with self._connect() as conn:
-            return self._load(conn, game_id)
+            game = self._load(conn, game_id)
+        if game is None or game.owner_id != owner:
+            return None
+        return game
 
-    def list_games(self) -> list[Game]:
+    def list_games(self, owner_id: str) -> list[Game]:
+        owner = require_owner_id(owner_id)
         with self._connect() as conn:
-            rows = conn.execute("SELECT id FROM games ORDER BY id DESC").fetchall()
+            rows = conn.execute(
+                "SELECT id FROM games WHERE owner_id = ? ORDER BY id DESC",
+                (owner,),
+            ).fetchall()
             return [game for row in rows if (game := self._load(conn, row["id"])) is not None]
 
-    def record_round(self, game_id: int, counts: Mapping[int, tuple[int, int]]) -> Game:
+    def record_round(
+        self,
+        game_id: int,
+        counts: Mapping[int, tuple[int, int]],
+        *,
+        owner_id: str,
+    ) -> Game:
         """Append a round. Refuses to score a game that is already over."""
+        owner = require_owner_id(owner_id)
         with self._transaction() as conn:
-            game_row, players = self._locked_game(conn, game_id)
+            game_row, players = self._locked_game(conn, game_id, owner)
             if game_row["status"] != "active":
                 raise ScoringError("This game is already finished.")
             scored = self._score_counts(players, counts)
@@ -175,19 +213,26 @@ class GameStore:
                 [(round_id, player_id, dutch, blitz, score) for player_id, dutch, blitz, score in scored],
             )
             self._apply_status(conn, game_id, game_row["target_score"])
-        game = self.get_game(game_id)
+        game = self.get_game(game_id, owner)
         if game is None:
             raise NotFoundError("That game isn't in the score book.")
         return game
 
-    def replace_last_round(self, game_id: int, counts: Mapping[int, tuple[int, int]]) -> Game:
+    def replace_last_round(
+        self,
+        game_id: int,
+        counts: Mapping[int, tuple[int, int]],
+        *,
+        owner_id: str,
+    ) -> Game:
         """Replace the card counts on the last round and recalculate the result.
 
         Editing can finish a game or reopen one, because the target is checked
         again from the corrected totals.
         """
+        owner = require_owner_id(owner_id)
         with self._transaction() as conn:
-            game_row, players = self._locked_game(conn, game_id)
+            game_row, players = self._locked_game(conn, game_id, owner)
             last = self._last_round_row(conn, game_id, missing="There is no round to fix.")
             scored = self._score_counts(players, counts)
             for player_id, dutch, blitz, score in scored:
@@ -202,22 +247,34 @@ class GameStore:
                 if updated.rowcount != 1:
                     raise ScoringError("Could not update that round.")
             self._apply_status(conn, game_id, game_row["target_score"])
-        game = self.get_game(game_id)
+        game = self.get_game(game_id, owner)
         if game is None:
             raise NotFoundError("That game isn't in the score book.")
         return game
 
-    def undo_last_round(self, game_id: int) -> Game:
+    def undo_last_round(self, game_id: int, *, owner_id: str) -> Game:
+        owner = require_owner_id(owner_id)
         with self._transaction() as conn:
-            game_row, _players = self._locked_game(conn, game_id)
+            game_row, _players = self._locked_game(conn, game_id, owner)
             last = self._last_round_row(conn, game_id, missing="There is no round to undo.")
             conn.execute("DELETE FROM round_entries WHERE round_id = ?", (last["id"],))
             conn.execute("DELETE FROM rounds WHERE id = ?", (last["id"],))
             self._apply_status(conn, game_id, game_row["target_score"])
-        game = self.get_game(game_id)
+        game = self.get_game(game_id, owner)
         if game is None:
             raise NotFoundError("That game isn't in the score book.")
         return game
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Add owner_id to databases created before accounts existed.
+
+        Older rows keep a NULL owner. They stay in the file, are hidden from
+        every account, and cannot be claimed.
+        """
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(games)")}
+        if "owner_id" not in columns:
+            conn.execute("ALTER TABLE games ADD COLUMN owner_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_games_owner ON games(owner_id)")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, isolation_level=None)
@@ -240,9 +297,14 @@ class GameStore:
         finally:
             conn.close()
 
-    def _locked_game(self, conn: sqlite3.Connection, game_id: int) -> tuple[sqlite3.Row, list[Player]]:
+    def _locked_game(
+        self,
+        conn: sqlite3.Connection,
+        game_id: int,
+        owner_id: str,
+    ) -> tuple[sqlite3.Row, list[Player]]:
         game_row = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
-        if game_row is None:
+        if game_row is None or game_row["owner_id"] != owner_id:
             raise NotFoundError("That game isn't in the score book.")
         players = [
             Player(id=row["id"], name=row["name"], seat=row["seat"])
@@ -352,4 +414,5 @@ class GameStore:
             created_at=game_row["created_at"],
             players=players,
             rounds=rounds,
+            owner_id=game_row["owner_id"],
         )

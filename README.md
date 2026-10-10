@@ -39,17 +39,48 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover negative round scores, running totals, the default target and a custom target, the 2-player and 8-player limits, ties, saved history, undo, and editing the last round.
+The tests cover negative round scores, running totals, the default target and a custom target, the 2-player and 8-player limits, ties, saved history, undo, editing the last round, sign-in enforcement, and that one account cannot see or change another account's games. Token checks in tests are stubbed, so the suite does not call Clerk.
 
 ## Configuration
+
+Copy `.env.example` to `.env` if you want the variables loaded automatically. `python -m app` reads that file without overriding variables you already exported. `.env` is gitignored. Do not put real keys in the repository.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DUTCH_BLITZ_DB_PATH` | `data/dutch_blitz.sqlite` | SQLite file. The directory is created if needed. |
 | `DUTCH_BLITZ_HOST` | `127.0.0.1` | Address the server binds to. |
 | `DUTCH_BLITZ_PORT` | `8000` | Port the server listens on. |
+| `CLERK_PUBLISHABLE_KEY` | unset | Clerk publishable key (`pk_test_...` or `pk_live_...`). Safe to send to the browser. |
+| `CLERK_SECRET_KEY` | unset | Clerk secret key (`sk_test_...` or `sk_live_...`). Required on the server. Never sent to the browser. |
+| `CLERK_FRONTEND_API` | decoded from the publishable key | Frontend API host, such as `example.clerk.accounts.dev`. |
+| `CLERK_ISSUER` | `https://<frontend API>` | Expected `iss` on the session token. |
+| `CLERK_JWKS_URL` | `<issuer>/.well-known/jwks.json` | Public keys used to verify the session JWT. |
+| `CLERK_AUTHORIZED_PARTIES` | unset | Optional comma-separated origins. When set, the token `azp` claim must be one of them. |
+| `CLERK_DEV_BYPASS` | off | Set to `1`, `true`, `yes`, or `on` only on a machine that is not shared. |
+| `CLERK_DEV_USER_ID` | `dev-user` | The single account used while the bypass is on. |
 
-The database file is gitignored. There are no secrets in this project. These variables are the hook for a later deploy; this repository does not add cloud infrastructure.
+The database file is gitignored. These variables are the hook for a later deploy; this repository does not add cloud infrastructure.
+
+## Sign-in
+
+Each signed-in person sees only the games they created. Listing, opening, scoring, fixing, and undoing all check the Clerk user id stored on the game.
+
+1. In the [Clerk dashboard](https://dashboard.clerk.com), create an application.
+2. Under API keys, copy the publishable key into `CLERK_PUBLISHABLE_KEY` and the secret key into `CLERK_SECRET_KEY`.
+3. Add `http://127.0.0.1:8000` as an allowed origin for that Clerk instance if the dashboard asks for one.
+4. From the repository root, run `python -m app` and open http://127.0.0.1:8000.
+
+The pages load Clerk's prebuilt sign-in and user button from the publishable key. The browser keeps the session token in a short-lived `__session` cookie and refreshes it before a same-origin form post or link. The server checks that token on every request except `/static/...`, using Clerk's public JWKS. The secret key stays on the server so a deploy cannot start half-configured; signature checks do not use it.
+
+Until both keys are set, the sign-in page explains what is missing and game routes respond with 401.
+
+### Development bypass
+
+`CLERK_DEV_BYPASS` is off unless you set it. When it is on, the server does not load Clerk and treats every visitor as `CLERK_DEV_USER_ID` (or `dev-user`). A banner on each page says the bypass is on. Everyone who can open the server shares that one account, so turn the flag off before sharing the process or deploying.
+
+### Games saved before accounts
+
+Opening an older SQLite file adds a nullable `owner_id` column. Rows that were already there keep `owner_id` NULL. They stay in the database, they are not deleted, and no account can see or claim them. New games always store the signed-in user's Clerk id.
 
 ## Rules encoded here
 
@@ -76,13 +107,15 @@ Player names are trimmed. Upper and lower case do not make two different players
 ## Layout
 
 ```text
-app/main.py        pages
+app/main.py        pages and the sign-in gate
+app/auth.py        Clerk session checks
+app/config.py      environment variables
 app/scoring.py     round score and game-end rules
-app/store.py       SQLite
+app/store.py       SQLite, including each game's owner
 app/views.py       totals and the words on the page
 app/templates/     server-rendered HTML
-app/static/        CSS and a little form JavaScript
+app/static/        CSS, score form, and Clerk cookie refresh
 tests/             pytest
 ```
 
-The pages are server-rendered. The only JavaScript shows the round score while you type, reveals extra name fields, and keeps a scroll wheel from changing a focused number.
+The pages are server-rendered. JavaScript shows the round score while you type, reveals extra name fields, keeps a scroll wheel from changing a focused number, and, when Clerk is configured, mounts sign-in and refreshes the session cookie.
