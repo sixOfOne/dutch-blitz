@@ -73,7 +73,7 @@ ansible-lint ansible/playbook.yml --offline
 
 ## Configuration
 
-Copy `.env.example` to `.env` if you want the variables loaded automatically. `python -m app` reads that file without overriding variables you already exported. `.env` is gitignored. Do not put real keys in the repository.
+Copy `.env.example` to `.env` if you want the variables loaded automatically. `python -m app` reads that file without overriding variables you already exported. `.env` and other `.env.*` files are gitignored. `.env.example` stays in the repo. Do not put real keys in the repository.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -181,7 +181,7 @@ terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
 
 `down` never runs that command. `--skip-backup` exists for a host that is already gone; scores saved after the last upload are not copied.
 
-`terraform.tfvars`, Terraform state, and `ansible/inventory/aws.yml` are gitignored. The example tfvars file has placeholders only.
+`terraform.tfvars`, Terraform state, generated files in `ansible/inventory/` (except `syntax-check.yml`), `.env`, and `*.pem` files are gitignored. The example tfvars file has placeholders only.
 
 ## Rules encoded here
 
