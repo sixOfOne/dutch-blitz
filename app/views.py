@@ -245,15 +245,17 @@ def present(game: Game) -> GameView:
     )
 
 
-def summarize(game: Game) -> GameSummary:
+def summarize(game: Game, *, viewer_id: str | None = None) -> GameSummary:
     view = present(game)
     rounds = "1 round" if view.round_count == 1 else f"{view.round_count} rounds"
+    shared = bool(viewer_id and game.owner_id != viewer_id)
+    prefix = "Shared · " if shared else ""
     return GameSummary(
         id=view.id,
         names_label=", ".join(player.name for player in view.players),
         detail_label=view.list_detail,
         meta_label=(
-            f"{view.state_label} · {rounds} · target {view.target_score} · {view.created_label}"
+            f"{prefix}{view.state_label} · {rounds} · target {view.target_score} · {view.created_label}"
         ),
         active=not view.finished,
     )

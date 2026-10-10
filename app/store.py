@@ -5,9 +5,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import secrets
 import sqlite3
 
-from app.errors import NotFoundError, ScoringError
+from app.errors import ForbiddenError, NotFoundError, ScoringError
 from app.scoring import (
     DEFAULT_TARGET,
     outcome,
@@ -22,7 +23,8 @@ CREATE TABLE IF NOT EXISTS games (
     target_score INTEGER NOT NULL CHECK (target_score BETWEEN 1 AND 999),
     created_at TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active', 'finished')),
-    owner_id TEXT
+    owner_id TEXT,
+    invite_token TEXT
 );
 
 CREATE TABLE IF NOT EXISTS players (
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS players (
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),
     seat INTEGER NOT NULL CHECK (seat BETWEEN 1 AND 8),
+    user_id TEXT,
     UNIQUE (game_id, seat),
     UNIQUE (game_id, name)
 );
@@ -63,6 +66,7 @@ class Player:
     id: int
     name: str
     seat: int
+    user_id: str | None = None
 
 
 @dataclass
@@ -88,6 +92,26 @@ class Game:
     players: list[Player]
     rounds: list[Round]
     owner_id: str | None = None
+    invite_token: str | None = None
+
+
+@dataclass
+class SeatInvite:
+    player_id: int
+    name: str
+    seat: int
+    open: bool
+
+
+@dataclass
+class InvitePreview:
+    """What a signed-in person sees before they claim a seat. No token."""
+
+    game_id: int
+    target_score: int
+    seats: list[SeatInvite]
+    already_joined: bool
+    is_owner: bool
 
 
 MAX_OWNER_ID_LENGTH = 200
@@ -158,21 +182,123 @@ class GameStore:
         return int(game_id)
 
     def get_game(self, game_id: int, owner_id: str) -> Game | None:
-        owner = require_owner_id(owner_id)
+        """Return the game when this account started it or has claimed a seat."""
+        user = require_owner_id(owner_id)
         with self._connect() as conn:
             game = self._load(conn, game_id)
-        if game is None or game.owner_id != owner:
+        if game is None or not _can_view(game, user):
             return None
         return game
 
     def list_games(self, owner_id: str) -> list[Game]:
-        owner = require_owner_id(owner_id)
+        """Games this account started, plus games where they claimed a seat."""
+        user = require_owner_id(owner_id)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id FROM games WHERE owner_id = ? ORDER BY id DESC",
-                (owner,),
+                """
+                SELECT id FROM games
+                WHERE owner_id = ?
+                   OR id IN (SELECT game_id FROM players WHERE user_id = ?)
+                ORDER BY id DESC
+                """,
+                (user, user),
             ).fetchall()
-            return [game for row in rows if (game := self._load(conn, row["id"])) is not None]
+            loaded = [self._load(conn, row["id"]) for row in rows]
+            return [game for game in loaded if game is not None and _can_view(game, user)]
+
+    def set_invite(self, game_id: int, *, owner_id: str, mode: str) -> str | None:
+        """Create, rotate, or disable the invite link. Owner only.
+
+        Creating again keeps the current link. Rotating replaces it, so the
+        old link stops working. Disabling clears it. Claimed seats stay either way.
+        """
+        if mode not in {"create", "rotate", "disable"}:
+            raise ValueError("mode must be create, rotate, or disable")
+        owner = require_owner_id(owner_id)
+        with self._transaction() as conn:
+            self._require_owner_game(conn, game_id, owner)
+            if mode == "disable":
+                conn.execute("UPDATE games SET invite_token = NULL WHERE id = ?", (game_id,))
+                return None
+            current = conn.execute(
+                "SELECT invite_token FROM games WHERE id = ?",
+                (game_id,),
+            ).fetchone()
+            if mode == "create" and current["invite_token"]:
+                return str(current["invite_token"])
+            token = secrets.token_urlsafe(18)
+            conn.execute(
+                "UPDATE games SET invite_token = ? WHERE id = ?",
+                (token, game_id),
+            )
+        return token
+
+    def revoke_seat(self, game_id: int, player_id: int, *, owner_id: str) -> None:
+        """Unlink the account on a seat. The seat can be claimed again. Owner only."""
+        owner = require_owner_id(owner_id)
+        with self._transaction() as conn:
+            _game_row, players = self._require_owner_game(conn, game_id, owner)
+            if not any(player.id == player_id for player in players):
+                raise ScoringError("That seat isn't in this game.")
+            conn.execute(
+                "UPDATE players SET user_id = NULL WHERE id = ? AND game_id = ?",
+                (player_id, game_id),
+            )
+
+    def claim_own_seat(self, game_id: int, player_id: int, *, owner_id: str) -> None:
+        """The owner marks one open seat as their own. Sharing can be off."""
+        owner = require_owner_id(owner_id)
+        with self._transaction() as conn:
+            self._require_owner_game(conn, game_id, owner)
+            self._claim(conn, game_id, player_id, owner)
+
+    def describe_invite(self, token: str, *, user_id: str) -> InvitePreview | None:
+        user = require_owner_id(user_id)
+        if not _valid_token(token):
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, owner_id, target_score
+                FROM games
+                WHERE invite_token = ?
+                """,
+                (token,),
+            ).fetchone()
+            if row is None or row["owner_id"] is None:
+                return None
+            players = self._players(conn, int(row["id"]))
+        return InvitePreview(
+            game_id=int(row["id"]),
+            target_score=int(row["target_score"]),
+            seats=[
+                SeatInvite(
+                    player_id=player.id,
+                    name=player.name,
+                    seat=player.seat,
+                    open=player.user_id is None,
+                )
+                for player in players
+            ],
+            already_joined=any(player.user_id == user for player in players),
+            is_owner=row["owner_id"] == user,
+        )
+
+    def join_game(self, token: str, player_id: int, *, user_id: str) -> int:
+        """Claim an open seat through the current invite link."""
+        user = require_owner_id(user_id)
+        if not _valid_token(token):
+            raise NotFoundError("That invite link isn't active.")
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT id, owner_id FROM games WHERE invite_token = ?",
+                (token,),
+            ).fetchone()
+            if row is None or row["owner_id"] is None:
+                raise NotFoundError("That invite link isn't active.")
+            game_id = int(row["id"])
+            self._claim(conn, game_id, player_id, user)
+        return game_id
 
     def record_round(
         self,
@@ -181,10 +307,10 @@ class GameStore:
         *,
         owner_id: str,
     ) -> Game:
-        """Append a round. Refuses to score a game that is already over."""
-        owner = require_owner_id(owner_id)
+        """Append a round. The owner or anyone who claimed a seat may do this."""
+        user = require_owner_id(owner_id)
         with self._transaction() as conn:
-            game_row, players = self._locked_game(conn, game_id, owner)
+            game_row, players, _role = self._access(conn, game_id, user)
             if game_row["status"] != "active":
                 raise ScoringError("This game is already finished.")
             scored = self._score_counts(players, counts)
@@ -213,7 +339,7 @@ class GameStore:
                 [(round_id, player_id, dutch, blitz, score) for player_id, dutch, blitz, score in scored],
             )
             self._apply_status(conn, game_id, game_row["target_score"])
-        game = self.get_game(game_id, owner)
+        game = self.get_game(game_id, user)
         if game is None:
             raise NotFoundError("That game isn't in the score book.")
         return game
@@ -230,9 +356,9 @@ class GameStore:
         Editing can finish a game or reopen one, because the target is checked
         again from the corrected totals.
         """
-        owner = require_owner_id(owner_id)
+        user = require_owner_id(owner_id)
         with self._transaction() as conn:
-            game_row, players = self._locked_game(conn, game_id, owner)
+            game_row, players = self._require_owner_game(conn, game_id, user)
             last = self._last_round_row(conn, game_id, missing="There is no round to fix.")
             scored = self._score_counts(players, counts)
             for player_id, dutch, blitz, score in scored:
@@ -247,34 +373,42 @@ class GameStore:
                 if updated.rowcount != 1:
                     raise ScoringError("Could not update that round.")
             self._apply_status(conn, game_id, game_row["target_score"])
-        game = self.get_game(game_id, owner)
+        game = self.get_game(game_id, user)
         if game is None:
             raise NotFoundError("That game isn't in the score book.")
         return game
 
     def undo_last_round(self, game_id: int, *, owner_id: str) -> Game:
-        owner = require_owner_id(owner_id)
+        user = require_owner_id(owner_id)
         with self._transaction() as conn:
-            game_row, _players = self._locked_game(conn, game_id, owner)
+            game_row, _players = self._require_owner_game(conn, game_id, user)
             last = self._last_round_row(conn, game_id, missing="There is no round to undo.")
             conn.execute("DELETE FROM round_entries WHERE round_id = ?", (last["id"],))
             conn.execute("DELETE FROM rounds WHERE id = ?", (last["id"],))
             self._apply_status(conn, game_id, game_row["target_score"])
-        game = self.get_game(game_id, owner)
+        game = self.get_game(game_id, user)
         if game is None:
             raise NotFoundError("That game isn't in the score book.")
         return game
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
-        """Add owner_id to databases created before accounts existed.
+        """Add account and sharing columns without rewriting old rows.
 
-        Older rows keep a NULL owner. They stay in the file, are hidden from
-        every account, and cannot be claimed.
+        Games saved before accounts keep a NULL owner. They stay in the file,
+        are hidden from every account, and cannot be claimed or invited.
+        Games saved before sharing keep a NULL invite token and unclaimed seats.
         """
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(games)")}
-        if "owner_id" not in columns:
+        game_columns = {row["name"] for row in conn.execute("PRAGMA table_info(games)")}
+        if "owner_id" not in game_columns:
             conn.execute("ALTER TABLE games ADD COLUMN owner_id TEXT")
+        if "invite_token" not in game_columns:
+            conn.execute("ALTER TABLE games ADD COLUMN invite_token TEXT")
+        player_columns = {row["name"] for row in conn.execute("PRAGMA table_info(players)")}
+        if "user_id" not in player_columns:
+            conn.execute("ALTER TABLE players ADD COLUMN user_id TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_games_owner ON games(owner_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_games_invite ON games(invite_token)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_players_user ON players(user_id)")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, isolation_level=None)
@@ -297,23 +431,67 @@ class GameStore:
         finally:
             conn.close()
 
-    def _locked_game(
+    def _access(
         self,
         conn: sqlite3.Connection,
         game_id: int,
-        owner_id: str,
-    ) -> tuple[sqlite3.Row, list[Player]]:
+        user_id: str,
+    ) -> tuple[sqlite3.Row, list[Player], str]:
         game_row = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
-        if game_row is None or game_row["owner_id"] != owner_id:
+        if game_row is None or game_row["owner_id"] is None:
             raise NotFoundError("That game isn't in the score book.")
-        players = [
-            Player(id=row["id"], name=row["name"], seat=row["seat"])
+        players = self._players(conn, game_id)
+        if game_row["owner_id"] == user_id:
+            return game_row, players, "owner"
+        if any(player.user_id == user_id for player in players):
+            return game_row, players, "participant"
+        raise NotFoundError("That game isn't in the score book.")
+
+    def _require_owner_game(
+        self,
+        conn: sqlite3.Connection,
+        game_id: int,
+        user_id: str,
+    ) -> tuple[sqlite3.Row, list[Player]]:
+        game_row, players, role = self._access(conn, game_id, user_id)
+        if role != "owner":
+            raise ForbiddenError("Only the person who started this game can do that.")
+        return game_row, players
+
+    def _claim(self, conn: sqlite3.Connection, game_id: int, player_id: int, user_id: str) -> None:
+        existing = conn.execute(
+            "SELECT id FROM players WHERE game_id = ? AND user_id = ?",
+            (game_id, user_id),
+        ).fetchone()
+        if existing is not None:
+            raise ScoringError("You already have a seat in this game.")
+        seat = conn.execute(
+            "SELECT id, user_id FROM players WHERE id = ? AND game_id = ?",
+            (player_id, game_id),
+        ).fetchone()
+        if seat is None:
+            raise ScoringError("That seat isn't in this game.")
+        if seat["user_id"] is not None:
+            raise ScoringError("That seat is already taken.")
+        updated = conn.execute(
+            """
+            UPDATE players
+            SET user_id = ?
+            WHERE id = ? AND game_id = ? AND user_id IS NULL
+            """,
+            (user_id, player_id, game_id),
+        )
+        if updated.rowcount != 1:
+            raise ScoringError("That seat is already taken.")
+
+    def _players(self, conn: sqlite3.Connection, game_id: int) -> list[Player]:
+        return [
+            Player(id=row["id"], name=row["name"], seat=row["seat"], user_id=row["user_id"])
             for row in conn.execute(
-                "SELECT id, name, seat FROM players WHERE game_id = ? ORDER BY seat",
+                "SELECT id, name, seat, user_id FROM players WHERE game_id = ? ORDER BY seat",
                 (game_id,),
             )
         ]
-        return game_row, players
 
     def _last_round_row(self, conn: sqlite3.Connection, game_id: int, *, missing: str) -> sqlite3.Row:
         last = conn.execute(
@@ -364,13 +542,7 @@ class GameStore:
         game_row = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
         if game_row is None:
             return None
-        players = [
-            Player(id=row["id"], name=row["name"], seat=row["seat"])
-            for row in conn.execute(
-                "SELECT id, name, seat FROM players WHERE game_id = ? ORDER BY seat",
-                (game_id,),
-            )
-        ]
+        players = self._players(conn, game_id)
         seat_of = {player.id: player.seat for player in players}
         round_rows = conn.execute(
             """
@@ -415,4 +587,19 @@ class GameStore:
             players=players,
             rounds=rounds,
             owner_id=game_row["owner_id"],
+            invite_token=game_row["invite_token"],
         )
+
+
+def _can_view(game: Game, user_id: str) -> bool:
+    if game.owner_id is None:
+        return False
+    if game.owner_id == user_id:
+        return True
+    return any(player.user_id == user_id for player in game.players)
+
+
+def _valid_token(token: str) -> bool:
+    if not isinstance(token, str) or not 20 <= len(token) <= 80:
+        return False
+    return all(character.isalnum() or character in "_-" for character in token)

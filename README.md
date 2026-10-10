@@ -39,7 +39,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests cover negative round scores, running totals, the default target and a custom target, the 2-player and 8-player limits, ties, saved history, undo, editing the last round, sign-in enforcement, and that one account cannot see or change another account's games. Token checks in tests are stubbed, so the suite does not call Clerk.
+The tests cover negative round scores, running totals, the default target and a custom target, the 2-player and 8-player limits, ties, saved history, undo, editing the last round, sign-in enforcement, invite links, and that an outsider cannot see a game. Token checks in tests are stubbed, so the suite does not call Clerk.
 
 ## Configuration
 
@@ -63,7 +63,7 @@ The database file is gitignored. These variables are the hook for a later deploy
 
 ## Sign-in
 
-Each signed-in person sees only the games they created. Listing, opening, scoring, fixing, and undoing all check the Clerk user id stored on the game.
+Each signed-in person sees the games they created and the games where they have claimed a seat. Anyone else gets the same not-found page as a missing game.
 
 1. In the [Clerk dashboard](https://dashboard.clerk.com), create an application.
 2. Under API keys, copy the publishable key into `CLERK_PUBLISHABLE_KEY` and the secret key into `CLERK_SECRET_KEY`.
@@ -80,7 +80,20 @@ Until both keys are set, the sign-in page explains what is missing and game rout
 
 ### Games saved before accounts
 
-Opening an older SQLite file adds a nullable `owner_id` column. Rows that were already there keep `owner_id` NULL. They stay in the database, they are not deleted, and no account can see or claim them. New games always store the signed-in user's Clerk id.
+Opening an older SQLite file adds any missing columns. Rows saved before accounts keep `owner_id` NULL. They stay in the database, they are not deleted, and no account can see, claim, or invite them. Games saved before sharing keep the invite turned off and every seat unclaimed. The owner of those games can still open them and can turn on an invite later.
+
+## Sharing a seat
+
+The owner shares a game with a link. This does not look people up by email, so it does not call Clerk's user API. The other person must already be able to sign in with Clerk.
+
+1. On the game page, choose **Create invite link** and send that URL to the table.
+2. Each person opens it while signed in and chooses **Play as** their name. One account can hold one seat.
+3. The game then shows up in their list. They can read the whole score sheet and enter the next round.
+4. **New invite link** invalidates the old URL and leaves current seats in place. **Turn invite link off** stops new people from joining and also leaves current seats in place. **Remove** on a seat drops that account; the seat is open again.
+
+**This is me** lets the owner claim their own seat without using the link.
+
+Anyone who has claimed a seat can enter a round. Only the owner can undo a round, fix the last round, create or change the invite, or remove someone. There is no separate delete-game action.
 
 ## Rules encoded here
 
@@ -111,7 +124,7 @@ app/main.py        pages and the sign-in gate
 app/auth.py        Clerk session checks
 app/config.py      environment variables
 app/scoring.py     round score and game-end rules
-app/store.py       SQLite, including each game's owner
+app/store.py       SQLite, owners, invite links, and claimed seats
 app/views.py       totals and the words on the page
 app/templates/     server-rendered HTML
 app/static/        CSS, score form, and Clerk cookie refresh

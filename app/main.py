@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 from app.auth import SESSION_COOKIE, AuthError, DevBypassVerifier, verifier_from_env
 from app.config import clerk_browser_config
 from app.config import db_path as configured_db_path
-from app.errors import NotFoundError, ScoringError
+from app.errors import ForbiddenError, NotFoundError, ScoringError
 from app.scoring import (
     DEFAULT_TARGET,
     MAX_BLITZ_LEFT,
@@ -94,7 +94,7 @@ def _register_routes(app: FastAPI) -> None:
             game_id = _store(request).create_game(
                 names,
                 parse_target(target_text),
-                owner_id=_owner(request),
+                owner_id=_user(request),
             )
         except ScoringError as exc:
             return _home(
@@ -108,12 +108,74 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/games/{game_id}")
     def show_game(request: Request, game_id: int, edit: int = 0):
-        game = _store(request).get_game(game_id, _owner(request))
+        user = _user(request)
+        game = _store(request).get_game(game_id, user)
         if game is None:
             return _missing(request)
-        editing = edit == 1 and bool(game.rounds)
+        editing = _is_owner(game, user) and edit == 1 and bool(game.rounds)
         draft = _draft_from_last(game) if editing else {}
         return _game_page(request, game, draft=draft, editing=editing)
+
+    @app.post("/games/{game_id}/invite")
+    async def update_invite(request: Request, game_id: int):
+        form = await request.form()
+        mode = str(form.get("mode") or "")
+        if mode not in {"create", "rotate", "disable"}:
+            return _missing(request)
+        user = _user(request)
+        try:
+            _store(request).set_invite(game_id, owner_id=user, mode=mode)
+        except NotFoundError:
+            return _missing(request)
+        except ForbiddenError as exc:
+            return _forbidden(request, game_id, exc.message)
+        return RedirectResponse(url=f"/games/{game_id}", status_code=303)
+
+    @app.post("/games/{game_id}/seats/{player_id}/claim")
+    def claim_seat(request: Request, game_id: int, player_id: int):
+        user = _user(request)
+        try:
+            _store(request).claim_own_seat(game_id, player_id, owner_id=user)
+        except NotFoundError:
+            return _missing(request)
+        except ForbiddenError as exc:
+            return _forbidden(request, game_id, exc.message)
+        except ScoringError as exc:
+            return _game_or_missing(request, game_id, error=exc.message, status_code=400)
+        return RedirectResponse(url=f"/games/{game_id}", status_code=303)
+
+    @app.post("/games/{game_id}/seats/{player_id}/revoke")
+    def revoke_seat(request: Request, game_id: int, player_id: int):
+        user = _user(request)
+        try:
+            _store(request).revoke_seat(game_id, player_id, owner_id=user)
+        except NotFoundError:
+            return _missing(request)
+        except ForbiddenError as exc:
+            return _forbidden(request, game_id, exc.message)
+        except ScoringError as exc:
+            return _game_or_missing(request, game_id, error=exc.message, status_code=400)
+        return RedirectResponse(url=f"/games/{game_id}", status_code=303)
+
+    @app.get("/join/{token}")
+    def show_invite(request: Request, token: str):
+        return _invite_page(request, token, error=None)
+
+    @app.post("/join/{token}")
+    async def accept_invite(request: Request, token: str):
+        form = await request.form()
+        raw_seat = form.get("player_id")
+        user = _user(request)
+        store = _store(request)
+        if raw_seat is None or not str(raw_seat).isdigit():
+            return _invite_page(request, token, error="Pick an open seat.", status_code=400)
+        try:
+            game_id = store.join_game(token, int(raw_seat), user_id=user)
+        except NotFoundError:
+            return _invite_missing(request)
+        except ScoringError as exc:
+            return _invite_page(request, token, error=exc.message, status_code=400)
+        return RedirectResponse(url=f"/games/{game_id}", status_code=303)
 
     @app.post("/games/{game_id}/rounds")
     async def save_round(request: Request, game_id: int):
@@ -126,13 +188,15 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/games/{game_id}/undo")
     def undo_round(request: Request, game_id: int):
         store = _store(request)
-        owner = _owner(request)
+        user = _user(request)
         try:
-            store.undo_last_round(game_id, owner_id=owner)
+            store.undo_last_round(game_id, owner_id=user)
         except NotFoundError:
             return _missing(request)
+        except ForbiddenError as exc:
+            return _forbidden(request, game_id, exc.message)
         except ScoringError as exc:
-            game = store.get_game(game_id, owner)
+            game = store.get_game(game_id, user)
             if game is None:
                 return _missing(request)
             return _game_page(request, game, error=exc.message, status_code=400)
@@ -143,8 +207,12 @@ def _store(request: Request) -> GameStore:
     return request.app.state.store
 
 
-def _owner(request: Request) -> str:
+def _user(request: Request) -> str:
     return request.state.user.user_id
+
+
+def _is_owner(game: Game, user_id: str) -> bool:
+    return game.owner_id == user_id
 
 
 def _token_from_request(request: Request) -> str:
@@ -192,7 +260,8 @@ def _home(
     target: str,
     status_code: int = 200,
 ):
-    games = [summarize(game) for game in _store(request).list_games(_owner(request))]
+    user = _user(request)
+    games = [summarize(game, viewer_id=user) for game in _store(request).list_games(user)]
     padded = list(names[:MAX_PLAYERS])
     padded.extend([""] * (MAX_PLAYERS - len(padded)))
     return _render(
@@ -218,6 +287,9 @@ def _game_page(
     editing: bool = False,
     status_code: int = 200,
 ):
+    user = _user(request)
+    is_owner = _is_owner(game, user)
+    your_name = next((player.name for player in game.players if player.user_id == user), None)
     return _render(
         request,
         "game.html",
@@ -226,9 +298,61 @@ def _game_page(
             "error": error,
             "draft": draft or {},
             "editing": editing,
+            "is_owner": is_owner,
+            "your_name": your_name,
+            "share": _share_context(request, game) if is_owner else None,
         },
         status_code=status_code,
     )
+
+
+def _share_context(request: Request, game: Game) -> dict:
+    user = _user(request)
+    url = None
+    if game.invite_token:
+        url = f"{str(request.base_url).rstrip('/')}/join/{game.invite_token}"
+    seats = []
+    for player in game.players:
+        if player.user_id is None:
+            state = "open"
+        elif player.user_id == user:
+            state = "you"
+        else:
+            state = "taken"
+        seats.append({"id": player.id, "name": player.name, "state": state})
+    return {"url": url, "seats": seats}
+
+
+def _forbidden(request: Request, game_id: int, message: str):
+    game = _store(request).get_game(game_id, _user(request))
+    if game is None:
+        return _missing(request)
+    return _game_page(request, game, error=message, status_code=403)
+
+
+def _game_or_missing(request: Request, game_id: int, *, error: str, status_code: int):
+    game = _store(request).get_game(game_id, _user(request))
+    if game is None:
+        return _missing(request)
+    return _game_page(request, game, error=error, status_code=status_code)
+
+
+def _invite_page(request: Request, token: str, *, error: str | None, status_code: int = 200):
+    preview = _store(request).describe_invite(token, user_id=_user(request))
+    if preview is None:
+        return _invite_missing(request)
+    if request.method == "GET" and preview.already_joined and error is None:
+        return RedirectResponse(url=f"/games/{preview.game_id}", status_code=303)
+    return _render(
+        request,
+        "invite.html",
+        {"invite": preview, "token": token, "error": error},
+        status_code=status_code,
+    )
+
+
+def _invite_missing(request: Request):
+    return _render(request, "invite_missing.html", {}, status_code=404)
 
 
 def _missing(request: Request):
@@ -275,22 +399,31 @@ def _parsed_counts(game: Game, form) -> dict[int, tuple[int, int]]:
 
 async def _save_counts(request: Request, game_id: int, *, replace: bool):
     store = _store(request)
-    owner = _owner(request)
-    game = store.get_game(game_id, owner)
+    user = _user(request)
+    game = store.get_game(game_id, user)
     if game is None:
         return _missing(request)
+    if replace and not _is_owner(game, user):
+        return _game_page(
+            request,
+            game,
+            error="Only the person who started this game can do that.",
+            status_code=403,
+        )
     form = await request.form()
     draft = _raw_draft(game, form)
     try:
         counts = _parsed_counts(game, form)
         if replace:
-            store.replace_last_round(game_id, counts, owner_id=owner)
+            store.replace_last_round(game_id, counts, owner_id=user)
         else:
-            store.record_round(game_id, counts, owner_id=owner)
+            store.record_round(game_id, counts, owner_id=user)
     except NotFoundError:
         return _missing(request)
+    except ForbiddenError as exc:
+        return _game_page(request, game, error=exc.message, draft=draft, status_code=403)
     except ScoringError as exc:
-        fresh = store.get_game(game_id, owner)
+        fresh = store.get_game(game_id, user)
         if fresh is None:
             return _missing(request)
         return _game_page(
@@ -298,7 +431,7 @@ async def _save_counts(request: Request, game_id: int, *, replace: bool):
             fresh,
             error=exc.message,
             draft=draft,
-            editing=replace,
+            editing=replace and _is_owner(fresh, user),
             status_code=400,
         )
     return RedirectResponse(url=f"/games/{game_id}", status_code=303)

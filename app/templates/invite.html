@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Join game · Dutch Blitz{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Join this game</h1>
+  <p class="help">First to {{ invite.target_score }}. Pick your seat. Each person can take one.</p>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  <ul class="seat-list">
+    {% for seat in invite.seats %}
+    <li class="seat-share">
+      <span class="seat-name">{{ seat.name }}</span>
+      {% if seat.open %}
+      <form method="post" action="/join/{{ token }}">
+        <input type="hidden" name="player_id" value="{{ seat.player_id }}">
+        <button class="primary" type="submit">Play as {{ seat.name }}</button>
+      </form>
+      {% else %}
+      <span class="muted">Taken</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

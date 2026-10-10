@@ -18,6 +18,10 @@
   </ul>
 </article>
 
+{% if your_name %}
+<p class="banner-note">You're playing as {{ your_name }}.</p>
+{% endif %}
+
 {% if editing or not game.finished %}
 <section class="card">
   <h2>{% if editing %}Fix round {{ game.round_count }}{% else %}Round {{ game.next_round }}{% endif %}</h2>
@@ -79,14 +83,66 @@
       </tbody>
     </table>
   </div>
+  {% if is_owner %}
   {% if not editing %}
   <p class="row-actions"><a class="text-link" href="/games/{{ game.id }}?edit=1">Fix last round</a></p>
   {% endif %}
   <form method="post" action="/games/{{ game.id }}/undo">
     <button class="danger" type="submit">{% if game.finished %}Undo last round and resume{% else %}Undo last round{% endif %}</button>
   </form>
+  {% endif %}
   {% else %}
   <p class="muted">Rounds will show up here after you save the first one.</p>
   {% endif %}
 </section>
+
+{% if is_owner %}
+<section class="card" id="share">
+  <h2>Share this game</h2>
+  <p class="help">Send the link to the other people at the table. After they sign in, they pick an open seat. Anyone in the game can enter rounds. Only you can undo a round, fix the last round, or change this link.</p>
+  {% if share.url %}
+  <label>Invite link
+    <input class="share-url" readonly value="{{ share.url }}">
+  </label>
+  <form method="post" action="/games/{{ game.id }}/invite">
+    <input type="hidden" name="mode" value="rotate">
+    <button class="secondary" type="submit">New invite link</button>
+  </form>
+  <form method="post" action="/games/{{ game.id }}/invite">
+    <input type="hidden" name="mode" value="disable">
+    <button class="danger" type="submit">Turn invite link off</button>
+  </form>
+  {% else %}
+  <form method="post" action="/games/{{ game.id }}/invite">
+    <input type="hidden" name="mode" value="create">
+    <button class="primary" type="submit">Create invite link</button>
+  </form>
+  {% endif %}
+  <h3 class="seat-heading">Seats</h3>
+  <ul class="seat-list">
+    {% for seat in share.seats %}
+    <li class="seat-share">
+      <span class="seat-name">{{ seat.name }}</span>
+      {% if seat.state == "open" %}
+      <form method="post" action="/games/{{ game.id }}/seats/{{ seat.id }}/claim">
+        <button class="secondary" type="submit">This is me</button>
+      </form>
+      {% elif seat.state == "you" %}
+      <form method="post" action="/games/{{ game.id }}/seats/{{ seat.id }}/revoke">
+        <span class="muted">You</span>
+        <button class="danger" type="submit">Remove</button>
+      </form>
+      {% else %}
+      <form method="post" action="/games/{{ game.id }}/seats/{{ seat.id }}/revoke">
+        <span class="muted">Taken</span>
+        <button class="danger" type="submit">Remove</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% elif your_name %}
+<p class="help share-note">Anyone in the game can enter a round. Only the person who started it can undo a round, fix the last round, or change the invite.</p>
+{% endif %}
 {% endblock %}

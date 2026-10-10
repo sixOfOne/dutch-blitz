@@ -14,7 +14,11 @@ class ScoringError(AppError):
 
 
 class NotFoundError(AppError):
-    """The requested game does not exist."""
+    """The requested game does not exist, or this account cannot see it."""
+
+
+class ForbiddenError(AppError):
+    """The account can see the game but cannot do this."""
 
 
 class AuthError(AppError):
