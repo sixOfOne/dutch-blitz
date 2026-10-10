@@ -47,9 +47,21 @@ variable "backup_bucket_name" {
 }
 
 variable "domain" {
-  description = "Optional hostname, such as scores.example.com. Leave empty to use <public-ipv4>.sslip.io."
+  description = "Optional hostname, such as scores.example.com. Leave empty to use <public-ipv4>.sslip.io. Ignored when dns_zone_name is set, unless it is the same name."
   type        = string
   default     = ""
+}
+
+variable "dns_zone_name" {
+  description = "Existing public Route 53 zone to publish the game-night A record in, such as sixofonedev.com. Leave empty to keep the sslip.io hostname and create no DNS records."
+  type        = string
+  default     = ""
+}
+
+variable "dns_record_name" {
+  description = "Relative name in dns_zone_name. Default blitz becomes blitz.sixofonedev.com. The zone itself is not created or destroyed."
+  type        = string
+  default     = "blitz"
 }
 
 variable "acme_email" {

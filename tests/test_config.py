@@ -79,6 +79,20 @@ def test_publishable_key_decodes_to_frontend_api_and_jwks(monkeypatch):
     assert "sk_test_example" not in clerk_browser_config().values()
 
 
+def test_live_publishable_key_uses_the_production_frontend_api(monkeypatch):
+    _clear_clerk(monkeypatch)
+    encoded = base64.b64encode(b"clerk.sixofonedev.com$").decode().rstrip("=")
+    key = f"pk_live_{encoded}"
+    monkeypatch.setenv("CLERK_PUBLISHABLE_KEY", key)
+    monkeypatch.setenv("CLERK_SECRET_KEY", "sk_live_example")
+    assert frontend_api_from_publishable_key(key) == "clerk.sixofonedev.com"
+    assert clerk_issuer() == "https://clerk.sixofonedev.com"
+    assert clerk_jwks_url() == "https://clerk.sixofonedev.com/.well-known/jwks.json"
+    assert clerk_browser_config()["frontendApi"] == "clerk.sixofonedev.com"
+    assert "accounts.dev" not in clerk_issuer()
+    assert "sk_live_example" not in clerk_browser_config().values()
+
+
 def test_explicit_clerk_urls_and_parties(monkeypatch):
     _clear_clerk(monkeypatch)
     monkeypatch.setenv("CLERK_FRONTEND_API", "custom.example")

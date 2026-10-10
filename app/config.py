@@ -66,7 +66,9 @@ def clerk_dev_user_id() -> str:
 def frontend_api_from_publishable_key(key: str) -> str | None:
     """Decode the Frontend API host stored in a Clerk publishable key.
 
-    Clerk keys look like ``pk_test_<base64(host + '$')>``.
+    Development keys (``pk_test_``) and production keys (``pk_live_``) both
+    encode ``base64(frontend_api_host + '$')``. The host is used as-is. A
+    production key for this domain decodes to ``clerk.sixofonedev.com``.
     """
     encoded = ""
     for prefix in ("pk_test_", "pk_live_"):

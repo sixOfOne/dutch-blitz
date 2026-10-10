@@ -19,17 +19,22 @@ output "ssh_host" {
 }
 
 output "hostname" {
-  description = "Public hostname. The domain variable when set, otherwise <ipv4>.sslip.io."
+  description = "Public hostname. Route 53 FQDN when dns_zone_name is set, otherwise domain, otherwise <ipv4>.sslip.io."
   value = var.enable_aws ? (
-    local.domain_name != "" ? local.domain_name : "${aws_instance.game[0].public_ip}.sslip.io"
+    local.public_hostname != "" ? local.public_hostname : "${aws_instance.game[0].public_ip}.sslip.io"
   ) : null
 }
 
 output "public_url" {
-  description = "https origin to share and to add in the Clerk dashboard."
+  description = "https origin to share. Stable across nights when dns_zone_name is set."
   value = var.enable_aws ? (
-    "https://${local.domain_name != "" ? local.domain_name : "${aws_instance.game[0].public_ip}.sslip.io"}"
+    "https://${local.public_hostname != "" ? local.public_hostname : "${aws_instance.game[0].public_ip}.sslip.io"}"
   ) : null
+}
+
+output "dns_fqdn" {
+  description = "Route 53 name for this night. Null when the sslip.io hostname is in use."
+  value       = var.enable_aws && local.dns_fqdn != "" ? local.dns_fqdn : null
 }
 
 output "backup_bucket" {

@@ -52,7 +52,7 @@ Copy `.env.example` to `.env` if you want the variables loaded automatically. `p
 | `DUTCH_BLITZ_PORT` | `8000` | Port the server listens on. |
 | `CLERK_PUBLISHABLE_KEY` | unset | Clerk publishable key (`pk_test_...` or `pk_live_...`). Safe to send to the browser. |
 | `CLERK_SECRET_KEY` | unset | Clerk secret key (`sk_test_...` or `sk_live_...`). Required on the server. Never sent to the browser. |
-| `CLERK_FRONTEND_API` | decoded from the publishable key | Frontend API host, such as `example.clerk.accounts.dev`. |
+| `CLERK_FRONTEND_API` | decoded from the publishable key | Frontend API host. A production key for this domain decodes to `clerk.sixofonedev.com`. A development key decodes to a `*.clerk.accounts.dev` host. The app uses whichever host is in the key. |
 | `CLERK_ISSUER` | `https://<frontend API>` | Expected `iss` on the session token. |
 | `CLERK_JWKS_URL` | `<issuer>/.well-known/jwks.json` | Public keys used to verify the session JWT. |
 | `CLERK_AUTHORIZED_PARTIES` | unset | Optional comma-separated origins. When set, the token `azp` claim must be one of them. |
@@ -111,7 +111,22 @@ Edit the copy: set `ssh_ingress_cidr` to your public IP as a `/32`, and set `bac
 PYTHONPATH=src python3 -m dutch_blitz_host up
 ```
 
-`up` creates the backup bucket if needed, starts the instance, installs the app, restores the latest snapshot, and prints an `https://` URL. Send that URL to the table. Caddy serves it with a certificate. With `domain` left empty, the name is `<public-ipv4>.sslip.io`, so you do not buy a domain. If this host already has a score file, configure uploads that file before the restore so a second configure does not roll the night backward. If the first S3 call fails, the instance role can take a few seconds to become usable; run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again.
+`up` creates the backup bucket if needed, starts the instance, installs the app, restores the latest snapshot, and prints an `https://` URL. Send that URL to the table. Caddy serves it with a certificate.
+
+With these lines in `terraform.tfvars`, the URL is always **https://blitz.sixofonedev.com**:
+
+```hcl
+dns_zone_name   = "sixofonedev.com"
+dns_record_name = "blitz"
+```
+
+`up` creates an A record for that name, TTL 60 seconds, pointing at the new public IP. It waits until the authoritative nameservers and the public resolvers (1.1.1.1 and 8.8.8.8) answer with that IP, then Caddy requests a certificate. `down` deletes the A record with the instance. The hosted zone stays. Terraform looks the zone up by name and does not create it, destroy it, or change its NS, SOA, or the Clerk records (`clerk`, `accounts`, `clkmail`, `clk._domainkey`, `clk2._domainkey`).
+
+Add `https://blitz.sixofonedev.com` once as an allowed origin in the [Clerk dashboard](https://dashboard.clerk.com) (and under Domains if the production instance asks). Later nights reuse that origin. The controller `.env` holds the production `pk_live_` / `sk_live_` keys. The app reads the Frontend API host from the publishable key, which is `clerk.sixofonedev.com`.
+
+Leave `dns_zone_name` empty to keep the previous hostname, `<public-ipv4>.sslip.io`. That name changes every night, so the Clerk allowed origin has to be updated to match. Set `domain` only when you are pointing some other name at the instance yourself.
+
+If this host already has a score file, configure uploads that file before the restore so a second configure does not roll the night backward. If the first S3 call fails, the instance role can take a few seconds to become usable; run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again.
 
 When the night is over:
 
@@ -120,8 +135,6 @@ PYTHONPATH=src python3 -m dutch_blitz_host down
 ```
 
 `down` uploads a final consistent snapshot (Python's `sqlite3` backup API), then destroys the instance. The S3 bucket is a separate Terraform state with `prevent_destroy`, so this command leaves it in place. A timer on the host also uploads about every 15 minutes. `PYTHONPATH=src python3 -m dutch_blitz_host backup` uploads once without tearing the host down.
-
-Before phones can sign in, open the [Clerk dashboard](https://dashboard.clerk.com) for this application and add the printed origin, for example `https://203.0.113.10.sslip.io`, as an allowed origin. A production instance also needs that hostname under Domains. Each new instance gets a new public IP, so a sslip.io name changes every night and the allowed origin has to be updated to match. Set `domain` in `terraform.tfvars` when you want a stable hostname. This stack does not create DNS records: point that name's A record at the instance's public IP, then run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again if the certificate was requested before DNS answered.
 
 On AWS, before the first `up`:
 

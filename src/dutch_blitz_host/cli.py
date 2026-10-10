@@ -17,8 +17,9 @@ import time
 from pathlib import Path
 
 from dutch_blitz_host.backup import BACKUP_STACK, NIGHT_STACK, destroy_plan
+from dutch_blitz_host.dns import wait_for_a_record
 from dutch_blitz_host.envfile import assert_deployable, merged_env, redact
-from dutch_blitz_host.hostname import https_origin
+from dutch_blitz_host.hostname import dns_fqdn, https_origin
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NIGHT_DIR = REPO_ROOT / NIGHT_STACK
@@ -318,6 +319,8 @@ def cmd_configure(*, ssh_key: str, dry_run: bool) -> int:
     )
     print(f"Hostname: {hostname}")
     print(f"Share URL: {https_origin(hostname)}")
+    if not _dns_ready(tfvars, hostname=hostname, public_ip=ip, dry_run=dry_run):
+        return 1
     if not dry_run:
         INVENTORY.write_text(inventory, encoding="utf-8")
         print(f"Wrote {INVENTORY}")
@@ -333,6 +336,41 @@ def cmd_configure(*, ssh_key: str, dry_run: bool) -> int:
     if not key.is_file():
         raise SystemExit(f"SSH key not found: {key}")
     return _run(cmd, REPO_ROOT / "ansible", env=child_env)
+
+
+def _dns_ready(tfvars: dict[str, str], *, hostname: str, public_ip: str, dry_run: bool) -> bool:
+    """Wait for the Route 53 name before Caddy asks Let's Encrypt for a certificate.
+
+    Unset DNS variables skip this. sslip.io does not need a lookup.
+    """
+    zone = tfvars.get("dns_zone_name", "")
+    if not zone.strip():
+        return True
+    record_name = tfvars["dns_record_name"] if "dns_record_name" in tfvars else None
+    try:
+        fqdn = dns_fqdn(zone, record_name)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not fqdn:
+        return True
+    if hostname != fqdn:
+        raise SystemExit(
+            f"Terraform hostname is {hostname}, expected {fqdn}. "
+            "Re-apply the game-night stack so the Route 53 name is the public hostname."
+        )
+    if dry_run:
+        print(f"Dry run: would wait for {fqdn} to resolve to {public_ip}.")
+        return True
+    print(f"Waiting for {fqdn} to resolve to {public_ip} before requesting a certificate.")
+    if wait_for_a_record(fqdn, public_ip, zone=fqdn.split(".", 1)[1]):
+        return True
+    print(
+        f"{fqdn} did not resolve to {public_ip} on the authoritative nameservers "
+        "and the public resolvers before the timeout. Caddy was not started. "
+        "When the name resolves, run: PYTHONPATH=src python3 -m dutch_blitz_host configure",
+        file=sys.stderr,
+    )
+    return False
 
 
 def cmd_up(*, do_init: bool) -> int:

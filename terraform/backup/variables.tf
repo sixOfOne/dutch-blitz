@@ -61,3 +61,15 @@ variable "acme_email" {
   type        = string
   default     = ""
 }
+
+variable "dns_zone_name" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack. The game-night stack owns the A record."
+  type        = string
+  default     = ""
+}
+
+variable "dns_record_name" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  type        = string
+  default     = "blitz"
+}

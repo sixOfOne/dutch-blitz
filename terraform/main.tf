@@ -29,7 +29,14 @@ provider "aws" {
 }
 
 locals {
-  domain_name = trimsuffix(trimspace(var.domain), ".")
+  manual_domain = trimsuffix(trimspace(var.domain), ".")
+  dns_zone      = trimsuffix(lower(trimspace(var.dns_zone_name)), ".")
+  dns_label     = trimsuffix(lower(trimspace(var.dns_record_name)), ".")
+  dns_fqdn      = local.dns_zone != "" ? "${local.dns_label}.${local.dns_zone}" : ""
+  # Route 53 wins when a zone is set. Otherwise keep today's domain or sslip.io.
+  public_hostname     = local.dns_fqdn != "" ? local.dns_fqdn : local.manual_domain
+  reserved_dns_labels = ["clerk", "accounts", "clkmail"]
+  manage_dns          = var.enable_aws && local.dns_zone != ""
 }
 
 resource "null_resource" "local_ready" {
@@ -59,14 +66,31 @@ resource "null_resource" "game_night_checks" {
 
     precondition {
       condition = (
-        local.domain_name == "" ||
+        local.manual_domain == "" ||
         (
-          !strcontains(local.domain_name, "://") &&
-          !strcontains(local.domain_name, "/") &&
-          !strcontains(local.domain_name, " ")
+          !strcontains(local.manual_domain, "://") &&
+          !strcontains(local.manual_domain, "/") &&
+          !strcontains(local.manual_domain, " ")
         )
       )
       error_message = "domain must be a hostname such as scores.example.com, not a URL."
+    }
+
+    precondition {
+      condition = (
+        local.dns_zone == "" ||
+        (
+          can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$", local.dns_zone)) &&
+          can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", local.dns_label)) &&
+          !contains(local.reserved_dns_labels, local.dns_label)
+        )
+      )
+      error_message = "dns_zone_name must be a domain such as sixofonedev.com, and dns_record_name a single label such as blitz. clerk, accounts, and clkmail are reserved."
+    }
+
+    precondition {
+      condition     = local.dns_fqdn == "" || local.manual_domain == "" || lower(local.manual_domain) == local.dns_fqdn
+      error_message = "When dns_zone_name is set, leave domain empty or set it to the same hostname."
     }
   }
 }
@@ -223,4 +247,23 @@ resource "aws_instance" "game" {
     Name    = "${var.name_prefix}-game"
     Project = "dutch-blitz"
   }
+}
+
+# The zone already exists (Clerk CNAMEs and NS/SOA were added by hand).
+# This data source only reads it. The one A record below is the only Route 53
+# change, and it is destroyed with the instance. Do not import the zone or
+# the clerk, accounts, clkmail, clk._domainkey, or clk2._domainkey records.
+data "aws_route53_zone" "game" {
+  count        = local.manage_dns ? 1 : 0
+  name         = "${local.dns_zone}."
+  private_zone = false
+}
+
+resource "aws_route53_record" "game" {
+  count   = local.manage_dns ? 1 : 0
+  zone_id = data.aws_route53_zone.game[0].zone_id
+  name    = local.dns_fqdn
+  type    = "A"
+  ttl     = 60
+  records = [aws_instance.game[0].public_ip]
 }

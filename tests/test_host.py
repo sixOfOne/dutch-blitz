@@ -1,6 +1,8 @@
 """Controller logic for a game-night host. No Terraform and no AWS calls."""
 
+import socket
 import sqlite3
+import struct
 from datetime import datetime, timezone
 
 import pytest
@@ -31,7 +33,13 @@ from dutch_blitz_host.envfile import (
     redact,
 )
 from dutch_blitz_host import host_backup
-from dutch_blitz_host.hostname import hostname_for, https_origin
+from dutch_blitz_host.dns import (
+    a_records_match,
+    decode_records,
+    encode_name,
+    wait_for_a_record,
+)
+from dutch_blitz_host.hostname import dns_fqdn, hostname_for, https_origin
 
 
 def test_hostname_uses_sslip_for_an_ipv4():
@@ -258,6 +266,133 @@ def test_wait_for_ssh_retries_until_the_login_succeeds():
                         run=run, sleep=clock.sleep, clock=clock)
     assert len(calls) == 3
     assert clock.now == 10
+
+
+def test_route53_name_is_the_fqdn_and_sslip_stays_when_unset():
+    assert hostname_for(
+        "203.0.113.10",
+        dns_zone_name="sixofonedev.com",
+        dns_record_name="blitz",
+    ) == "blitz.sixofonedev.com"
+    assert hostname_for(
+        "203.0.113.10",
+        "scores.example.com",
+        dns_zone_name="SixOfOneDev.com.",
+        dns_record_name="Blitz.",
+    ) == "blitz.sixofonedev.com"
+    assert https_origin("blitz.sixofonedev.com") == "https://blitz.sixofonedev.com"
+    assert hostname_for("203.0.113.10", dns_zone_name="  ") == "203.0.113.10.sslip.io"
+    assert hostname_for("203.0.113.10", "scores.example.com", dns_zone_name="") == "scores.example.com"
+    assert dns_fqdn(None, "blitz") is None
+
+
+def test_route53_name_rejects_urls_and_clerk_labels():
+    with pytest.raises(ValueError):
+        hostname_for("203.0.113.10", dns_zone_name="https://sixofonedev.com")
+    with pytest.raises(ValueError):
+        hostname_for("203.0.113.10", dns_zone_name="sixofonedev.com", dns_record_name="clerk")
+    with pytest.raises(ValueError):
+        hostname_for("203.0.113.10", dns_zone_name="sixofonedev.com", dns_record_name="clk._domainkey")
+    with pytest.raises(ValueError):
+        hostname_for("203.0.113.10", dns_zone_name="sixofonedev.com", dns_record_name="")
+
+
+def test_dns_answer_must_be_exactly_the_new_address():
+    packet = _dns_a_packet("blitz.sixofonedev.com", ["203.0.113.10"], ident=7)
+    assert decode_records(packet, 7, 1) == ["203.0.113.10"]
+    stale = _dns_a_packet("blitz.sixofonedev.com", ["198.51.100.8"], ident=7)
+    assert not a_records_match(decode_records(stale, 7, 1), "203.0.113.10")
+    both = _dns_a_packet("blitz.sixofonedev.com", ["203.0.113.10", "198.51.100.8"], ident=4)
+    assert not a_records_match(decode_records(both, 4, 1), "203.0.113.10")
+    assert a_records_match(["203.0.113.10"], "203.0.113.10")
+    missing = _dns_a_packet("blitz.sixofonedev.com", [], ident=7, rcode=3)
+    assert decode_records(missing, 7, 1) == []
+
+
+def test_wait_for_dns_keeps_polling_until_the_new_ip_replaces_the_old_one():
+    clock = _FakeClock()
+    client = _ScriptedDns(
+        [
+            ["198.51.100.8"],
+            ["203.0.113.10"],
+            ["198.51.100.8"],
+            ["203.0.113.10"],
+            ["203.0.113.10"],
+            ["203.0.113.10"],
+        ]
+    )
+    assert wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=60,
+        interval=5,
+        client=client,
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    assert clock.now == 10
+    assert ("a", "blitz.sixofonedev.com", "192.0.2.53") in client.calls
+    assert ("a", "blitz.sixofonedev.com", "1.1.1.1") in client.calls
+    assert ("a", "blitz.sixofonedev.com", "8.8.8.8") in client.calls
+
+
+def test_wait_for_dns_returns_immediately_when_every_server_has_the_new_ip():
+    clock = _FakeClock()
+    client = _ScriptedDns([["203.0.113.10"], ["203.0.113.10"], ["203.0.113.10"]])
+    assert wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=30,
+        interval=5,
+        client=client,
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    assert clock.now == 0
+
+
+def test_wait_for_dns_times_out_while_the_old_address_remains():
+    clock = _FakeClock()
+    client = _ScriptedDns([["198.51.100.8"]] * 8)
+    assert not wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=10,
+        interval=5,
+        client=client,
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    assert clock.now == 10
+
+
+def _dns_a_packet(name: str, addresses: list[str], *, ident: int, rcode: int = 0) -> bytes:
+    question = encode_name(name) + struct.pack("!HH", 1, 1)
+    answers = b""
+    for address in addresses:
+        answers += struct.pack("!HHHIH", 0xC00C, 1, 1, 60, 4) + socket.inet_aton(address)
+    flags = 0x8180 | rcode
+    header = struct.pack("!HHHHHH", ident, flags, 1, len(addresses), 0, 0)
+    return header + question + answers
+
+
+class _ScriptedDns:
+    def __init__(self, answers: list[list[str]]):
+        self._answers = list(answers)
+        self.calls: list[tuple[str, str, str]] = []
+
+    def ns_records(self, zone: str, server: str) -> list[str]:
+        self.calls.append(("ns", zone, server))
+        return ["ns1.example.net"]
+
+    def a_records(self, name: str, server: str, **_kwargs: object) -> list[str]:
+        self.calls.append(("a", name, server))
+        if name == "ns1.example.net":
+            return ["192.0.2.53"]
+        return self._answers.pop(0)
 
 
 def test_wait_for_ssh_gives_up_after_the_timeout():

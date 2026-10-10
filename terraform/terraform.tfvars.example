@@ -12,3 +12,10 @@ root_volume_gb     = 8
 backup_bucket_name = "dutch-blitz-scores-replace-me"
 domain             = ""
 acme_email         = ""
+
+# Leave dns_zone_name empty to keep the sslip.io hostname and create no
+# DNS records. These two lines publish an A record in the existing public
+# zone and remove it on down. The zone, its NS/SOA, and the Clerk CNAMEs
+# are not managed here.
+dns_zone_name   = "sixofonedev.com"
+dns_record_name = "blitz"
