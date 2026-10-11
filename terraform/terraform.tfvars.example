@@ -7,6 +7,9 @@ enable_aws         = true
 aws_region         = "us-east-2"
 key_name           = "neo-atari"
 ssh_ingress_cidr   = "203.0.113.10/32"
+# Public IP of a second machine that also runs `up` or `down`, as a /32.
+# Leave the list empty when only one machine opens SSH.
+ssh_ingress_cidrs  = []
 instance_type      = "t3.small"
 root_volume_gb     = 8
 backup_bucket_name = "dutch-blitz-scores-replace-me"

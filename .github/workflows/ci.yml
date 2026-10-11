@@ -88,8 +88,10 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v7
 
-      # The modules require Terraform >= 1.5.0. 1.16.5 is a current
-      # stable release, pinned so the check does not move under us.
+      # The roots require Terraform >= 1.10.0 because the S3 backend
+      # uses use_lockfile. 1.16.5 is a current stable release, pinned
+      # so the check does not move under us. 1.10 is the first release
+      # with that lock. DynamoDB locking is not used.
       #
       # terraform_wrapper is off. The wrapper captures command output
       # for later steps and can hide the real exit code. fmt -check and
@@ -108,9 +110,9 @@ jobs:
       - name: Check Terraform formatting
         run: terraform fmt -check -diff -recursive
 
-      # The AWS provider archive is large. Both roots below use
+      # The AWS provider archive is large. Every root below uses
       # hashicorp/aws and hashicorp/null, so one cache directory serves
-      # both inits in this job. Actions also restores the directory on
+      # all of the inits in this job. Actions also restores the directory on
       # the next run. restore-keys accepts an older cache when a .tf
       # file changed but the providers did not, instead of downloading
       # from scratch.
@@ -123,8 +125,9 @@ jobs:
             terraform-plugins-
 
       # init -backend=false downloads provider schemas only. It does not
-      # configure remote state. There is no backend block in the modules
-      # today; the flag is what keeps a future backend from being contacted.
+      # configure remote state and does not read backend.hcl. The roots
+      # have an s3 backend block; this flag is what keeps CI from
+      # contacting the state bucket. There are no AWS credentials here.
       #
       # validate checks that the configuration is internally consistent.
       # It does not run plan or apply, so it creates nothing.
@@ -134,14 +137,14 @@ jobs:
       #
       # TF_IN_AUTOMATION tells Terraform it is not a person at a prompt.
       # TF_PLUGIN_CACHE_DIR is the directory restored above. The same
-      # directory is filled on a cache miss and reused for the second root.
+      # directory is filled on a cache miss and reused for every root.
       - name: Validate each Terraform root
         env:
           TF_IN_AUTOMATION: "true"
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/terraform-plugin-cache
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
-          for dir in terraform terraform/backup; do
+          for dir in terraform terraform/backup terraform/state terraform/iam-bot terraform/game-role; do
             terraform -chdir="$dir" init -backend=false -input=false -no-color
             terraform -chdir="$dir" validate -no-color -var=enable_aws=false
           done

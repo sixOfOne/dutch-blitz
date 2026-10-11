@@ -22,7 +22,10 @@ from dutch_blitz_host.cli import (
     build_parser,
     parse_tfvars,
     render_aws_inventory,
+    require_backend_config,
     ssh_probe_argv,
+    terraform_init_argv,
+    terraform_local_init_argv,
     wait_for_ssh,
 )
 from dutch_blitz_host.envfile import (
@@ -214,6 +217,25 @@ def test_down_parser_accepts_skip_backup():
     args = build_parser().parse_args(["down", "--skip-backup"])
     assert args.command == "down"
     assert args.skip_backup is True
+
+
+def test_remote_init_passes_the_gitignored_backend_file(tmp_path):
+    backend = tmp_path / "backend.hcl"
+    backend.write_text('bucket = "example-tfstate"\nregion = "us-east-2"\n', encoding="utf-8")
+    argv = terraform_init_argv("terraform", backend)
+    assert argv[:3] == ["terraform", "init", "-input=false"]
+    assert f"-backend-config={backend}" in argv
+    assert "-migrate-state" not in argv
+    assert "-reconfigure" not in argv
+    assert terraform_local_init_argv("terraform") == [
+        "terraform",
+        "init",
+        "-backend=false",
+        "-input=false",
+    ]
+    assert require_backend_config(backend) == backend
+    with pytest.raises(SystemExit):
+        require_backend_config(tmp_path / "missing.hcl")
 
 
 def test_backup_database_noop_when_the_file_is_missing(tmp_path, monkeypatch, capsys):

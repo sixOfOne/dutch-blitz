@@ -40,6 +40,10 @@ override.tf.json
 terraform.tfvars
 *.auto.tfvars
 
+# S3 backend settings. The bucket name is account-specific.
+# backend.hcl.example stays tracked.
+backend.hcl
+
 # Private keys. The EC2 key stays in ~/.ssh and must not be copied in.
 *.pem
 *.key

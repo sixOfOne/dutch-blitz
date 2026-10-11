@@ -44,6 +44,12 @@ variable "ssh_ingress_cidr" {
   default     = ""
 }
 
+variable "ssh_ingress_cidrs" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack. The game-night stack opens SSH to these CIDRs."
+  type        = list(string)
+  default     = []
+}
+
 variable "backup_bucket_name" {
   description = "Globally unique S3 bucket for SQLite snapshots. This stack creates it and refuses to destroy it."
   type        = string

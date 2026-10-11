@@ -1,13 +1,21 @@
 # Durable SQLite backup bucket. Separate state from the game-night instance
 # so `dutch_blitz_host down` can destroy the EC2 host without this bucket.
+# The instance role is not in this root either. `up` applies this directory,
+# so a role stored here would be something the bot could plan and rewrite.
+# The role is terraform/game-role, which only the owner applies.
 #
 # prevent_destroy below is a literal. Terraform will not delete the bucket
 # until that line is removed. After removing it, destroy only this directory:
 #   terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
 # A non-empty bucket still refuses to delete (force_destroy is false).
 # Empty it first if you mean to retire the score history.
+#
+# Init this root with the shared backend file first, or destroy will be
+# looking at an old local state:
+#   terraform -chdir=terraform/backup init -backend-config=../backend.hcl
 terraform {
-  required_version = ">= 1.5.0"
+  # 1.10 added S3 lock files (use_lockfile). CI runs 1.16.5.
+  required_version = ">= 1.10.0"
 
   required_providers {
     aws = {
@@ -18,6 +26,16 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.2"
     }
+  }
+
+  # Partial backend, same file as the game-night root, different key.
+  # down destroys the instance and must not be able to point this state
+  # at the game-night key. use_lockfile serializes the Mac and the Linux
+  # assistant. Migration: docs/remote-state.md.
+  backend "s3" {
+    key          = "dutch-blitz/backup/terraform.tfstate"
+    use_lockfile = true
+    encrypt      = true
   }
 }
 

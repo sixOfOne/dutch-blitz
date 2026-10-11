@@ -25,6 +25,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NIGHT_DIR = REPO_ROOT / NIGHT_STACK
 BACKUP_DIR = REPO_ROOT / BACKUP_STACK
 TFVARS = NIGHT_DIR / "terraform.tfvars"
+# Shared partial backend. Gitignored. The example file next to it is tracked.
+BACKEND_CONFIG = NIGHT_DIR / "backend.hcl"
+# A second apply (the Mac and the Linux box) waits this long for the
+# S3 lock file instead of failing at once. The default Terraform wait is 0s.
+LOCK_TIMEOUT = "120s"
 INVENTORY = REPO_ROOT / "ansible" / "inventory" / "aws.yml"
 PLAYBOOK = REPO_ROOT / "ansible" / "playbook.yml"
 SSH_USER = "ec2-user"
@@ -87,7 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_init(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--init", action="store_true", help="terraform init before plan, apply, or destroy")
+    parser.add_argument(
+        "--init",
+        action="store_true",
+        help="terraform init before plan, apply, or destroy. AWS nights init on every command either way, so the S3 backend config is applied.",
+    )
 
 
 def parse_tfvars(text: str) -> dict[str, str]:
@@ -208,10 +217,53 @@ def _terraform() -> str:
     terraform = shutil.which("terraform")
     if not terraform:
         raise SystemExit(
-            "terraform not found on PATH. Install Terraform 1.5 or newer "
-            "(https://developer.hashicorp.com/terraform/install)."
+            "terraform not found on PATH. Install Terraform 1.10 or newer "
+            "(https://developer.hashicorp.com/terraform/install). "
+            "1.10 is the first release that locks S3 state with use_lockfile. CI uses 1.16.5."
         )
     return terraform
+
+
+def require_backend_config(path: Path = BACKEND_CONFIG) -> Path:
+    """Return the gitignored backend file, or stop with a copy instruction.
+
+    The bucket name cannot live in a committed backend block. Terraform
+    reads that block before variables exist, so ``up`` and ``down`` pass
+    this file as ``-backend-config``.
+    """
+    if not path.is_file():
+        raise SystemExit(
+            "Remote state is not configured. Copy terraform/backend.hcl.example "
+            "to terraform/backend.hcl and set the state bucket name. "
+            "That file is gitignored. The one-time migration is docs/remote-state.md."
+        )
+    return path
+
+
+def terraform_init_argv(terraform: str, backend_config: Path) -> list[str]:
+    """Init the S3 backend without prompting.
+
+    ``-backend-config`` fills in the bucket and region. ``-input=false``
+    makes a missing value fail instead of waiting for a person, which
+    matters when the assistant runs this. This does not pass
+    ``-migrate-state``: copying local state into S3 is a one-time step
+    the owner runs by hand.
+    """
+    return [
+        terraform,
+        "init",
+        "-input=false",
+        f"-backend-config={backend_config}",
+    ]
+
+
+def terraform_local_init_argv(terraform: str) -> list[str]:
+    """Init without contacting S3.
+
+    ``enable_aws`` false is the local no-op. It has no state bucket and
+    no credentials. CI uses the same ``-backend=false`` flag.
+    """
+    return [terraform, "init", "-backend=false", "-input=false"]
 
 
 def _run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> int:
@@ -260,6 +312,19 @@ def require_aws_outputs(outputs: dict) -> tuple[str, str, str]:
     return ip, hostname, bucket
 
 
+def _init_terraform(tf_dir: Path, *, var_file: Path | None, do_init: bool) -> int:
+    terraform = _terraform()
+    values = load_tfvars(var_file) if var_file is not None and var_file.is_file() else {}
+    # An AWS night always inits. A previous local init would otherwise
+    # keep using the Mac's terraform.tfstate after this repo grew a
+    # backend block. The local no-op still skips S3.
+    if aws_enabled(values):
+        return _run(terraform_init_argv(terraform, require_backend_config()), tf_dir)
+    if do_init or not (tf_dir / ".terraform").exists():
+        return _run(terraform_local_init_argv(terraform), tf_dir)
+    return 0
+
+
 def cmd_terraform(
     tf_dir: Path,
     *,
@@ -269,12 +334,10 @@ def cmd_terraform(
 ) -> int:
     if not (tf_dir / "main.tf").is_file():
         raise SystemExit(f"Terraform files missing under {tf_dir}")
-    terraform = _terraform()
-    if do_init or not (tf_dir / ".terraform").exists():
-        code = _run([terraform, "init", "-input=false"], tf_dir)
-        if code != 0:
-            return code
-    cmd = [terraform, action, "-input=false"]
+    code = _init_terraform(tf_dir, var_file=var_file, do_init=do_init)
+    if code != 0:
+        return code
+    cmd = [_terraform(), action, "-input=false", f"-lock-timeout={LOCK_TIMEOUT}"]
     if var_file is not None and var_file.is_file():
         cmd.extend(["-var-file", str(var_file)])
     if action == "apply":
@@ -385,6 +448,9 @@ def cmd_up(*, do_init: bool) -> int:
     code = cmd_terraform(BACKUP_DIR, action="apply", do_init=do_init, var_file=TFVARS)
     if code != 0:
         return code
+    # The instance profile is not created here. terraform/game-role is
+    # owner-only. This apply looks the profile up by name and passes it
+    # to RunInstances. It fails if that root has not been applied.
     code = cmd_terraform(NIGHT_DIR, action="apply", do_init=do_init, var_file=TFVARS)
     if code != 0:
         return code
@@ -411,6 +477,7 @@ def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool
     steps = destroy_plan(skip_backup=skip_backup)
     print("Destroy plan:", ", ".join(steps))
     print(f"The backup bucket stack ({BACKUP_STACK}) is not destroyed.")
+    print("The instance role (terraform/game-role) is not destroyed.")
     if dry_run:
         print("Dry run only; nothing was destroyed.")
         return 0

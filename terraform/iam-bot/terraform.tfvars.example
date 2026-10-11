@@ -1,0 +1,20 @@
+# Copy to terraform/iam-bot/terraform.tfvars (gitignored) and edit.
+# Apply this stack yourself, with your own credentials, not the bot's.
+# The bot user is not allowed to create users, attach policies, or
+# change budgets. See docs/bot-iam.md and the credentials section
+# of the README.
+
+enable_aws          = true
+aws_region          = "us-east-2"
+aws_account_id      = "000000000000"
+state_bucket_name   = "dutch-blitz-tfstate-replace-me"
+backup_bucket_name  = "dutch-blitz-scores-replace-me"
+dns_zone_id         = "Z000000000000EXAMPLE"
+dns_record_name     = "blitz"
+name_prefix         = "dutch-blitz"
+key_name            = "neo-atari"
+bot_user_name       = "grok-bot-dutch-blitz"
+budget_name         = "dutch-blitz-monthly"
+monthly_budget_usd  = "10"
+budget_alert_email  = "alerts@example.com"
+budget_start        = "2026-10-01_00:00"

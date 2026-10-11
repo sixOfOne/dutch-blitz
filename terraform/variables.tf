@@ -40,6 +40,12 @@ variable "ssh_ingress_cidr" {
   default     = ""
 }
 
+variable "ssh_ingress_cidrs" {
+  description = "Extra SSH CIDRs, such as the Linux assistant's public IP as a /32. ssh_ingress_cidr is still required. The game-night security group allows the whole list."
+  type        = list(string)
+  default     = []
+}
+
 variable "backup_bucket_name" {
   description = "Globally unique S3 bucket that stores SQLite snapshots. Created by terraform/backup and kept when the instance is destroyed."
   type        = string
