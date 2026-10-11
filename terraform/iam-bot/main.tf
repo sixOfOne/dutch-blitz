@@ -7,7 +7,8 @@
 # this state file. Create the key afterwards and store it outside git.
 #
 # The policy text is docs/grok-bot-dutch-blitz-policy.json. This root
-# only substitutes the placeholders. Edit the JSON, then apply again.
+# fills its ${name} variables with templatefile. Edit the JSON, then
+# apply again.
 # An inline policy on a user is limited to 2,048 characters. A managed
 # policy allows 6,144. Apply attaches the document as two managed
 # policies so neither half is the whole file. The split is the quota,
@@ -53,48 +54,34 @@ provider "aws" {
 
 locals {
   role_name = "${var.name_prefix}-game"
-  # Each replace fills one placeholder from the gitignored tfvars.
-  # The JSON file in docs/ keeps the example values so the public repo
-  # has no account id, bucket name, hosted zone id, or email.
-  # us-east-2 is not an account secret; it is replaced so the EC2
-  # condition follows aws_region instead of a second hardcoded copy.
-  bot_policy_json = replace(
-    replace(
-      replace(
-        replace(
-          replace(
-            replace(
-              replace(
-                replace(
-                  replace(
-                    file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"),
-                    "000000000000",
-                    var.aws_account_id,
-                  ),
-                  "dutch-blitz-tfstate-replace-me",
-                  var.state_bucket_name,
-                ),
-                "dutch-blitz-scores-replace-me",
-                var.backup_bucket_name,
-              ),
-              "Z000000000000EXAMPLE",
-              var.dns_zone_id,
-            ),
-            "dutch-blitz-game",
-            local.role_name,
-          ),
-          "key-pair/neo-atari",
-          "key-pair/${var.key_name}",
-        ),
-        "blitz.*",
-        "${var.dns_record_name}.*",
-      ),
-      "dutch-blitz-monthly",
-      var.budget_name,
-    ),
-    "us-east-2",
-    var.aws_region,
-  )
+  # Names in docs/grok-bot-dutch-blitz-policy.json. templatefile fills
+  # each ${name} in one pass, so a value is not scanned for another
+  # name. None of these strings may contain another: the old nested
+  # replace() ran "000000000000" before "Z000000000000EXAMPLE", and the
+  # zone token contains the account token, so every hosted zone ARN
+  # was written as Z<account-id>EXAMPLE.
+  policy_template_vars = [
+    "aws_account_id",
+    "aws_region",
+    "state_bucket_name",
+    "backup_bucket_name",
+    "dns_zone_id",
+    "dns_record_name",
+    "role_name",
+    "key_name",
+    "budget_name",
+  ]
+  bot_policy_json = templatefile("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json", {
+    aws_account_id     = var.aws_account_id
+    aws_region         = var.aws_region
+    state_bucket_name  = var.state_bucket_name
+    backup_bucket_name = var.backup_bucket_name
+    dns_zone_id        = var.dns_zone_id
+    dns_record_name    = var.dns_record_name
+    role_name          = local.role_name
+    key_name           = var.key_name
+    budget_name        = var.budget_name
+  })
   bot_policy_document = jsondecode(local.bot_policy_json)
   # Statements through PassRole are the EC2 and IAM half. Everything
   # after that (Route 53, S3, cost, budget) is the other half. A new
@@ -159,18 +146,34 @@ resource "null_resource" "bot_checks" {
     }
 
     precondition {
+      condition = alltrue([
+        for pair in setproduct(local.policy_template_vars, local.policy_template_vars) :
+        pair[0] == pair[1] || !strcontains(pair[0], pair[1])
+      ])
+      error_message = "A $${name} variable in the bot policy is a substring of another. Rename them so no placeholder can contain another."
+    }
+
+    precondition {
+      condition = alltrue([
+        for name in local.policy_template_vars :
+        strcontains(
+          file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"),
+          "$${${name}}",
+        )
+      ])
+      error_message = "docs/grok-bot-dutch-blitz-policy.json is missing a $${name} variable. Keep those names in the reference policy; templatefile fills them from tfvars."
+    }
+
+    precondition {
       condition = (
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "000000000000") &&
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "dutch-blitz-tfstate-replace-me") &&
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "dutch-blitz-scores-replace-me") &&
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "Z000000000000EXAMPLE") &&
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "dutch-blitz-game") &&
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "key-pair/neo-atari") &&
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "blitz.*") &&
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "dutch-blitz-monthly") &&
-        strcontains(file("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json"), "us-east-2")
+        !var.enable_aws ||
+        (
+          !strcontains(local.bot_policy_json, "EXAMPLE") &&
+          !strcontains(local.bot_policy_json, "000000000000") &&
+          !strcontains(local.bot_policy_json, "replace-me")
+        )
       )
-      error_message = "The bot policy JSON is missing a placeholder. Keep the example values in docs/grok-bot-dutch-blitz-policy.json; tfvars replace them at apply time."
+      error_message = "The rendered bot policy still contains EXAMPLE, 000000000000, or replace-me. Set aws_account_id, dns_zone_id, state_bucket_name, and backup_bucket_name in terraform/iam-bot/terraform.tfvars. A zone id left half-substituted looks like hostedzone/Z<account-id>EXAMPLE."
     }
 
     precondition {

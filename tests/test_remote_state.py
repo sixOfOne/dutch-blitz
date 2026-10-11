@@ -4,7 +4,9 @@ These tests read the committed Terraform and the bot policy. They do not
 call AWS and they do not run terraform init.
 """
 
+import itertools
 import json
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -62,8 +64,47 @@ FORBIDDEN_ACTIONS = {
 }
 
 
+# Example values the variable defaults still use. The reference JSON no
+# longer contains them: templatefile inserts each ${name} in one pass.
+# 123456789012 is AWS's documented example account id, not this account.
+EXAMPLE_VALUES = {
+    "aws_account_id": "000000000000",
+    "aws_region": "us-east-2",
+    "state_bucket_name": "dutch-blitz-tfstate-replace-me",
+    "backup_bucket_name": "dutch-blitz-scores-replace-me",
+    "dns_zone_id": "Z000000000000EXAMPLE",
+    "dns_record_name": "blitz",
+    "role_name": "dutch-blitz-game",
+    "key_name": "neo-atari",
+    "budget_name": "dutch-blitz-monthly",
+}
+REAL_VALUES = {
+    **EXAMPLE_VALUES,
+    "aws_account_id": "123456789012",
+    "state_bucket_name": "example-tfstate-bucket",
+    "backup_bucket_name": "example-scores-bucket",
+    "dns_zone_id": "Z1234567890ABC",
+}
+TEMPLATE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _render(values: dict[str, str]) -> str:
+    """One-pass stand-in for templatefile. Inserted text is not scanned again."""
+    text = POLICY_PATH.read_text(encoding="utf-8")
+    found = set(TEMPLATE_RE.findall(text))
+    missing = found - values.keys()
+    extra = values.keys() - found
+    if missing or extra:
+        raise AssertionError(f"template vars mismatch missing={sorted(missing)} extra={sorted(extra)}")
+
+    def repl(match: re.Match[str]) -> str:
+        return values[match.group(1)]
+
+    return TEMPLATE_RE.sub(repl, text)
+
+
 def _policy():
-    return json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    return json.loads(_render(EXAMPLE_VALUES))
 
 
 def _actions(policy: dict) -> set[str]:
@@ -77,24 +118,74 @@ def _actions(policy: dict) -> set[str]:
     return found
 
 
-def test_bot_policy_is_json_and_keeps_placeholders():
+def test_reference_policy_uses_non_overlapping_template_variables():
     text = POLICY_PATH.read_text(encoding="utf-8")
     policy = json.loads(text)
     assert policy["Version"] == "2012-10-17"
-    for placeholder in (
-        "000000000000",
-        "dutch-blitz-tfstate-replace-me",
-        "dutch-blitz-scores-replace-me",
-        "Z000000000000EXAMPLE",
-        "dutch-blitz-game",
-        "key-pair/neo-atari",
-        "blitz.*",
-        "dutch-blitz-monthly",
-        "us-east-2",
-    ):
-        assert placeholder in text
+    names = set(TEMPLATE_RE.findall(text))
+    assert names == set(EXAMPLE_VALUES)
+    for left, right in itertools.permutations(names, 2):
+        assert left not in right
+    # The old zone token contains the account token. Neither literal is
+    # in the reference file, so a later replace() cannot corrupt the zone.
+    assert "000000000000" not in text
+    assert "Z000000000000EXAMPLE" not in text
+    assert "replace-me" not in text
+    assert "EXAMPLE" not in text
     # The alert address is a tfvars variable, not a policy field.
     assert "@" not in text
+    rendered = _render(EXAMPLE_VALUES)
+    assert json.loads(rendered)["Version"] == "2012-10-17"
+    assert "Z000000000000EXAMPLE" in rendered
+    assert "arn:aws:iam::000000000000:role/dutch-blitz-game" in rendered
+    assert "blitz.*" in rendered
+
+
+def test_rendered_policy_has_no_placeholder_fragments():
+    rendered = _render(REAL_VALUES)
+    policy = json.loads(rendered)
+    for fragment in ("EXAMPLE", "000000000000", "replace-me", "${"):
+        assert fragment not in rendered
+    zones = [
+        item
+        for statement in policy["Statement"]
+        for item in (
+            statement["Resource"]
+            if isinstance(statement["Resource"], list)
+            else [statement["Resource"]]
+        )
+        if isinstance(item, str) and "hostedzone/" in item
+    ]
+    assert zones
+    assert set(zones) == {"arn:aws:route53:::hostedzone/Z1234567890ABC"}
+    assert "arn:aws:iam::123456789012:role/dutch-blitz-game" in rendered
+    assert "arn:aws:ec2:us-east-2:123456789012:key-pair/neo-atari" in rendered
+    # The historical bug left this shape: account id substituted inside
+    # the zone token, and the zone replace then found nothing.
+    assert "hostedzone/Z123456789012EXAMPLE" not in rendered
+
+
+def test_zone_value_containing_the_account_token_is_inserted_whole():
+    values = dict(EXAMPLE_VALUES)
+    values["aws_account_id"] = "123456789012"
+    values["dns_zone_id"] = "Z000000000000EXAMPLE"
+    rendered = _render(values)
+    assert "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE" in rendered
+    assert "hostedzone/Z123456789012EXAMPLE" not in rendered
+    assert "arn:aws:iam::123456789012:role/dutch-blitz-game" in rendered
+
+
+def test_iam_bot_renders_with_templatefile_and_rejects_leftover_fragments():
+    iam = (REPO / "terraform" / "iam-bot" / "main.tf").read_text(encoding="utf-8")
+    assert "templatefile(" in iam
+    assert "docs/grok-bot-dutch-blitz-policy.json" in iam
+    assert "bot_policy_json = replace(" not in iam
+    for name in EXAMPLE_VALUES:
+        assert name in iam
+    assert 'strcontains(local.bot_policy_json, "EXAMPLE")' in iam
+    assert 'strcontains(local.bot_policy_json, "000000000000")' in iam
+    assert 'strcontains(local.bot_policy_json, "replace-me")' in iam
+    assert "!var.enable_aws" in iam
 
 
 def test_bot_policy_is_split_under_the_managed_policy_quota():
@@ -192,6 +283,23 @@ def test_every_root_uses_s3_lockfiles_and_ci_skips_the_backend():
     assert "terraform/iam-bot" in workflow
     assert "terraform/game-role" in workflow
     assert "init -backend=false" in workflow
+    assert "\n*_override.tf\n" in gitignore
+    doc = (REPO / "docs" / "remote-state.md").read_text(encoding="utf-8")
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    state_main = (REPO / "terraform" / "state" / "main.tf").read_text(encoding="utf-8")
+    assert "bootstrap_override.tf" in doc
+    assert 'backend "local" {}' in doc
+    assert "Backend initialization required" in doc
+    assert "rm terraform/state/bootstrap_override.tf" in doc
+    assert "init -migrate-state -backend-config=../backend.hcl" in doc
+    assert "terraform show" in doc
+    assert "dutch-blitz-tfstate-backup" in doc
+    # init -backend=false then apply is not the bootstrap procedure.
+    assert "init -backend=false -input=false\nterraform -chdir=terraform/state apply" not in doc
+    assert "init -backend=false -input=false" not in state_main
+    assert "bootstrap_override.tf" in state_main
+    assert "bootstrap_override.tf" in readme
+    assert 'backend "local" {}' in readme
     iam = (REPO / "terraform" / "iam-bot" / "main.tf").read_text(encoding="utf-8")
     assert "docs/grok-bot-dutch-blitz-policy.json" in iam
     assert 'resource "aws_iam_access_key"' not in iam

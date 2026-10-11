@@ -11,7 +11,7 @@ terraform -chdir=terraform/iam-bot init -backend-config=../backend.hcl
 terraform -chdir=terraform/iam-bot apply -var-file=terraform.tfvars
 ```
 
-Apply refuses the example account id `000000000000`, the example zone id `Z000000000000EXAMPLE`, the `replace-me` bucket names, and any `alerts@example.com` address. Those strings stay in git. The real values stay in `terraform/iam-bot/terraform.tfvars`, which is gitignored.
+Apply refuses the example account id `000000000000`, the example zone id `Z000000000000EXAMPLE`, the `replace-me` bucket names, and any `alerts@example.com` address. Those strings stay in the example tfvars and the variable defaults. They are not written into the policy JSON. The real values stay in `terraform/iam-bot/terraform.tfvars`, which is gitignored. When `enable_aws` is true, apply also refuses a rendered policy that still contains `EXAMPLE`, `000000000000`, or `replace-me`. That is the check for a hosted zone ARN left as `Z<account-id>EXAMPLE`.
 
 AWS sends the budget address a confirmation message. The alarm does not send until that message is confirmed. The budget is account-wide: a night is about $0.10, and $10 is the line for a forgotten instance. Raise `monthly_budget_usd` if this account pays for other work. The bot can view this budget. It cannot change it.
 
@@ -19,25 +19,27 @@ The access key is not a Terraform resource. Creating it in Terraform would store
 
 ## The policy file
 
-[grok-bot-dutch-blitz-policy.json](grok-bot-dutch-blitz-policy.json) is the policy. `terraform/iam-bot` reads that file and replaces the placeholders below. Edit the JSON, then apply this root again with your own credentials.
+[grok-bot-dutch-blitz-policy.json](grok-bot-dutch-blitz-policy.json) is the policy. `terraform/iam-bot` reads that file with `templatefile` and fills each `${name}` from the variables below. Edit the JSON, then apply this root again with your own credentials.
 
-| Placeholder in the JSON | Replaced from |
+| Variable in the JSON | Value |
 | --- | --- |
-| `000000000000` | `aws_account_id` |
-| `dutch-blitz-tfstate-replace-me` | `state_bucket_name` |
-| `dutch-blitz-scores-replace-me` | `backup_bucket_name` |
-| `Z000000000000EXAMPLE` | `dns_zone_id` |
-| `dutch-blitz-game` | `<name_prefix>-game` |
-| `key-pair/neo-atari` | `key-pair/<key_name>` |
-| `blitz.*` | `<dns_record_name>.*` |
-| `dutch-blitz-monthly` | `budget_name` |
-| `us-east-2` | `aws_region` |
+| `${aws_account_id}` | `aws_account_id` |
+| `${state_bucket_name}` | `state_bucket_name` |
+| `${backup_bucket_name}` | `backup_bucket_name` |
+| `${dns_zone_id}` | `dns_zone_id` |
+| `${role_name}` | `<name_prefix>-game` |
+| `${key_name}` | `key_name`, in the segment `key-pair/${key_name}` |
+| `${dns_record_name}` | `dns_record_name`, in the pattern `${dns_record_name}.*` |
+| `${budget_name}` | `budget_name` |
+| `${aws_region}` | `aws_region` |
+
+`templatefile` substitutes each name once and does not scan a filled-in value for another name. None of those names is a substring of another. The old nested `replace()` ran `000000000000` before `Z000000000000EXAMPLE`. The zone token contains the account token, so the applied policy pointed every Route 53 statement at `hostedzone/Z<account-id>EXAMPLE`, and `route53:GetHostedZone` returned AccessDenied for a zone that does not exist. The reference JSON keeps the `${name}` variables so it stays readable, and it does not contain those example strings.
 
 There is no email in the JSON. The address is only an argument of the budget resource. That is also why the bot cannot `s3:GetObject` the `dutch-blitz/iam-bot/terraform.tfstate` key: the state for this root contains the address.
 
 An inline policy on a user is limited to 2,048 characters. A managed policy allows 6,144. The rendered document is about 5,900 non-whitespace characters: under one managed policy, and over the inline limit. Apply still attaches two managed policies, `grok-bot-dutch-blitz-compute` (EC2, `iam:GetInstanceProfile`, and `PassGameRoleToEc2Only`) and `grok-bot-dutch-blitz-records` (Route 53, S3, cost, and the budget view). The two resources stay so a later statement does not force a new policy address, and so each half stays well under 6,144. The split is the quota. It is not a second set of rights. Whitespace does not count toward the quota. A precondition on the root refuses a half that grows past 6,144.
 
-If this root was already applied with the older policy, apply it again with your own credentials. That replaces the two managed policies. The bot cannot do that apply: it has no `iam:CreatePolicy` and no `iam:AttachUserPolicy`. Until you re-apply, the previous document, including `iam:PutRolePolicy`, is still what AWS enforces.
+If this root was already applied, apply it again with your own credentials. That replaces the two managed policies. Until you do, AWS still enforces the previous document: the Route 53 statements name `hostedzone/Z<account-id>EXAMPLE`, and an older copy may still include `iam:PutRolePolicy`. The bot cannot do that apply: it has no `iam:CreatePolicy` and no `iam:AttachUserPolicy`.
 
 ## What `up` and `down` are allowed to do
 

@@ -8,7 +8,7 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-2"
+          "aws:RequestedRegion": "${aws_region}"
         }
       }
     },
@@ -17,12 +17,12 @@
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
       "Resource": [
-        "arn:aws:ec2:us-east-2:000000000000:instance/*",
-        "arn:aws:ec2:us-east-2:000000000000:volume/*"
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:instance/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:volume/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-2",
+          "aws:RequestedRegion": "${aws_region}",
           "aws:RequestTag/Project": "dutch-blitz"
         }
       }
@@ -32,17 +32,17 @@
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
       "Resource": [
-        "arn:aws:ec2:us-east-2:000000000000:network-interface/*",
-        "arn:aws:ec2:us-east-2:000000000000:security-group/*",
-        "arn:aws:ec2:us-east-2:000000000000:subnet/*",
-        "arn:aws:ec2:us-east-2::image/*",
-        "arn:aws:ec2:us-east-2:000000000000:image/*",
-        "arn:aws:ec2:us-east-2::snapshot/*",
-        "arn:aws:ec2:us-east-2:000000000000:key-pair/neo-atari"
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:network-interface/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:security-group/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:subnet/*",
+        "arn:aws:ec2:${aws_region}::image/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:image/*",
+        "arn:aws:ec2:${aws_region}::snapshot/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:key-pair/${key_name}"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-2"
+          "aws:RequestedRegion": "${aws_region}"
         }
       }
     },
@@ -51,12 +51,12 @@
       "Effect": "Allow",
       "Action": "ec2:CreateSecurityGroup",
       "Resource": [
-        "arn:aws:ec2:us-east-2:000000000000:security-group/*",
-        "arn:aws:ec2:us-east-2:000000000000:vpc/*"
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:security-group/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:vpc/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-2"
+          "aws:RequestedRegion": "${aws_region}"
         }
       }
     },
@@ -68,12 +68,12 @@
         "ec2:DeleteSecurityGroup"
       ],
       "Resource": [
-        "arn:aws:ec2:us-east-2:000000000000:instance/*",
-        "arn:aws:ec2:us-east-2:000000000000:security-group/*"
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:instance/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:security-group/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-2",
+          "aws:RequestedRegion": "${aws_region}",
           "ec2:ResourceTag/Project": "dutch-blitz"
         }
       }
@@ -90,10 +90,10 @@
         "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
         "ec2:UpdateSecurityGroupRuleDescriptionsEgress"
       ],
-      "Resource": "arn:aws:ec2:us-east-2:000000000000:security-group/*",
+      "Resource": "arn:aws:ec2:${aws_region}:${aws_account_id}:security-group/*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-2",
+          "aws:RequestedRegion": "${aws_region}",
           "ec2:ResourceTag/Project": "dutch-blitz"
         }
       }
@@ -106,14 +106,14 @@
         "ec2:DeleteTags"
       ],
       "Resource": [
-        "arn:aws:ec2:us-east-2:000000000000:instance/*",
-        "arn:aws:ec2:us-east-2:000000000000:volume/*",
-        "arn:aws:ec2:us-east-2:000000000000:security-group/*",
-        "arn:aws:ec2:us-east-2:000000000000:network-interface/*"
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:instance/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:volume/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:security-group/*",
+        "arn:aws:ec2:${aws_region}:${aws_account_id}:network-interface/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-2"
+          "aws:RequestedRegion": "${aws_region}"
         }
       }
     },
@@ -121,13 +121,13 @@
       "Sid": "ReadGameInstanceProfile",
       "Effect": "Allow",
       "Action": "iam:GetInstanceProfile",
-      "Resource": "arn:aws:iam::000000000000:instance-profile/dutch-blitz-game"
+      "Resource": "arn:aws:iam::${aws_account_id}:instance-profile/${role_name}"
     },
     {
       "Sid": "PassGameRoleToEc2Only",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::000000000000:role/dutch-blitz-game",
+      "Resource": "arn:aws:iam::${aws_account_id}:role/${role_name}",
       "Condition": {
         "StringEquals": {
           "iam:PassedToService": "ec2.amazonaws.com"
@@ -138,11 +138,11 @@
       "Sid": "ChangeOnlyBlitzARecord",
       "Effect": "Allow",
       "Action": "route53:ChangeResourceRecordSets",
-      "Resource": "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE",
+      "Resource": "arn:aws:route53:::hostedzone/${dns_zone_id}",
       "Condition": {
         "ForAllValues:StringLike": {
           "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
-            "blitz.*"
+            "${dns_record_name}.*"
           ]
         },
         "ForAllValues:StringEquals": {
@@ -161,7 +161,7 @@
       "Sid": "DenyClerkAndMailRecordChanges",
       "Effect": "Deny",
       "Action": "route53:ChangeResourceRecordSets",
-      "Resource": "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE",
+      "Resource": "arn:aws:route53:::hostedzone/${dns_zone_id}",
       "Condition": {
         "ForAnyValue:StringLike": {
           "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
@@ -178,7 +178,7 @@
       "Sid": "DenyZoneDelegationAndCnameChanges",
       "Effect": "Deny",
       "Action": "route53:ChangeResourceRecordSets",
-      "Resource": "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE",
+      "Resource": "arn:aws:route53:::hostedzone/${dns_zone_id}",
       "Condition": {
         "ForAnyValue:StringEquals": {
           "route53:ChangeResourceRecordSetsRecordTypes": [
@@ -197,7 +197,7 @@
         "route53:ListResourceRecordSets",
         "route53:ListTagsForResource"
       ],
-      "Resource": "arn:aws:route53:::hostedzone/Z000000000000EXAMPLE"
+      "Resource": "arn:aws:route53:::hostedzone/${dns_zone_id}"
     },
     {
       "Sid": "ListHostedZonesByName",
@@ -221,7 +221,7 @@
         "s3:GetObject",
         "s3:PutObject"
       ],
-      "Resource": "arn:aws:s3:::dutch-blitz-scores-replace-me/*"
+      "Resource": "arn:aws:s3:::${backup_bucket_name}/*"
     },
     {
       "Sid": "ManageBackupBucketConfiguration",
@@ -241,8 +241,8 @@
         "s3:GetObjectLockConfiguration"
       ],
       "Resource": [
-        "arn:aws:s3:::dutch-blitz-scores-replace-me",
-        "arn:aws:s3:::dutch-blitz-scores-replace-me/*"
+        "arn:aws:s3:::${backup_bucket_name}",
+        "arn:aws:s3:::${backup_bucket_name}/*"
       ]
     },
     {
@@ -253,8 +253,8 @@
         "s3:PutObject"
       ],
       "Resource": [
-        "arn:aws:s3:::dutch-blitz-tfstate-replace-me/dutch-blitz/game-night/terraform.tfstate",
-        "arn:aws:s3:::dutch-blitz-tfstate-replace-me/dutch-blitz/backup/terraform.tfstate"
+        "arn:aws:s3:::${state_bucket_name}/dutch-blitz/game-night/terraform.tfstate",
+        "arn:aws:s3:::${state_bucket_name}/dutch-blitz/backup/terraform.tfstate"
       ]
     },
     {
@@ -266,8 +266,8 @@
         "s3:DeleteObject"
       ],
       "Resource": [
-        "arn:aws:s3:::dutch-blitz-tfstate-replace-me/dutch-blitz/game-night/terraform.tfstate.tflock",
-        "arn:aws:s3:::dutch-blitz-tfstate-replace-me/dutch-blitz/backup/terraform.tfstate.tflock"
+        "arn:aws:s3:::${state_bucket_name}/dutch-blitz/game-night/terraform.tfstate.tflock",
+        "arn:aws:s3:::${state_bucket_name}/dutch-blitz/backup/terraform.tfstate.tflock"
       ]
     },
     {
@@ -277,7 +277,7 @@
         "s3:ListBucket",
         "s3:GetBucketLocation"
       ],
-      "Resource": "arn:aws:s3:::dutch-blitz-tfstate-replace-me"
+      "Resource": "arn:aws:s3:::${state_bucket_name}"
     },
     {
       "Sid": "ReadCostExplorer",
@@ -289,7 +289,7 @@
       "Sid": "ViewMonthlyBudget",
       "Effect": "Allow",
       "Action": "budgets:ViewBudget",
-      "Resource": "arn:aws:budgets::000000000000:budget/dutch-blitz-monthly"
+      "Resource": "arn:aws:budgets::${aws_account_id}:budget/${budget_name}"
     }
   ]
 }
