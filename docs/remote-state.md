@@ -14,6 +14,7 @@ DynamoDB is not used. It was the lock table for older Terraform. This repo's CI 
 | `terraform/backend.hcl.example` | yes | Shows the two settings the block cannot hold. |
 | `terraform/backend.hcl` | no | The real state bucket name. A backend block cannot use variables, so this file is the partial configuration. |
 | `terraform/state/terraform.tfvars` | no | The same bucket name, plus `enable_aws`, for the bootstrap apply. |
+| `terraform/state/bootstrap_override.tf` | no | Temporary `backend "local" {}` so the first apply has a backend. `*_override.tf` is gitignored. Delete it before migrating. |
 | `*.tfstate` | no | Already gitignored. Keep the old ones as backups after migration. |
 
 The five keys, all in that one bucket:
@@ -55,26 +56,38 @@ cp terraform/backup/terraform.tfstate "$HOME/dutch-blitz-tfstate-backup/backup.t
 
 `terraform init -migrate-state` leaves the local file in place. Keep that file and the copy until step 6 looks right. Git already ignores `*.tfstate`, so the copies in the working tree are not committed. The copy under your home directory is the one that survives a later clean of the checkout.
 
-### 3. Bootstrap the bucket with local state
+`terraform state list` cannot take this snapshot. Until a backend has been initialized, it stops with `Backend initialization required`. The copies are the before picture. Step 6 reads them with `terraform show`.
 
-The backend block is already in `terraform/state`. The first apply must ignore it, because the bucket it names does not exist yet. `-backend=false` does that. Do not delete the backend block.
+### 3. Bootstrap the bucket with a local backend override
+
+The `backend "s3"` block is already in `terraform/state`. The bucket it names does not exist yet, so this first apply has to store state on disk. Leave that block in `main.tf`. `terraform init -backend=false` does not take its place: the flag skips backend initialization, and the following `apply` stops with `Backend initialization required`.
+
+`*_override.tf` is in `.gitignore`. An override file replaces the backend for this one apply. Create it, initialize the local backend, and apply:
 
 ```bash
-terraform -chdir=terraform/state init -backend=false -input=false
+cat > terraform/state/bootstrap_override.tf <<'EOF'
+terraform {
+  backend "local" {}
+}
+EOF
+terraform -chdir=terraform/state init -input=false
 terraform -chdir=terraform/state apply -var-file=terraform.tfvars
 ```
 
 Read the plan. It creates one bucket, with versioning, AES256 encryption, a public-access block, ACL ownership locked to the bucket owner, and a bucket policy that denies any request that is not TLS. It does not create an instance. `prevent_destroy` is set, and `force_destroy` is false.
 
-Then copy that new local state too, before you migrate it:
+Copy that new local state, then delete the override. The copy has to happen before the migration in the next step. Deleting the override puts `backend "s3"` back. Do not run `init -migrate-state` while `bootstrap_override.tf` is still there, or the backend stays local and nothing is copied to the bucket.
 
 ```bash
 cp terraform/state/terraform.tfstate "$HOME/dutch-blitz-tfstate-backup/state.tfstate"
+rm terraform/state/bootstrap_override.tf
 ```
+
+`terraform state list` stops again as soon as the override is gone, until the next step initializes S3. The file you just copied is the record of this apply. `terraform state list -state=<file>` needs an initialized backend too, so it is not a way to read that copy early.
 
 ### 4. Migrate each root that already has a local state file
 
-`backend.hcl` must name the bucket from step 3. From the repository root:
+`bootstrap_override.tf` is already deleted. `backend.hcl` must name the bucket from step 3. From the repository root:
 
 ```bash
 terraform -chdir=terraform/state init -migrate-state -backend-config=../backend.hcl
@@ -103,17 +116,25 @@ Copy `terraform/backend.hcl` and `terraform/terraform.tfvars` to the assistant's
 
 The assistant's credentials are the bot access key, stored in its secret store. See the README. Its `up` and `down` pass `-backend-config` to `terraform init` for you.
 
-### 6. Verify, then keep the local files
+### 6. Verify against the saved state files
+
+`terraform state list` fails with `Backend initialization required` until that root has been initialized. Do not run it before step 4 and expect a before picture. The copies under `$HOME/dutch-blitz-tfstate-backup` are the before picture.
+
+`terraform show <file>` reads one of those copies. It uses the provider plugins already downloaded in that root, and it does not need the S3 backend, which is why it still works when `state list` does not. After step 4, `state list` is what S3 has. Compare the two. Do not run `init -backend=false` again here.
 
 ```bash
+terraform -chdir=terraform show "$HOME/dutch-blitz-tfstate-backup/game-night.tfstate"
+terraform -chdir=terraform/backup show "$HOME/dutch-blitz-tfstate-backup/backup.tfstate"
+terraform -chdir=terraform/state show "$HOME/dutch-blitz-tfstate-backup/state.tfstate"
+
 terraform -chdir=terraform state list
 terraform -chdir=terraform/backup state list
 terraform -chdir=terraform/state state list
 ```
 
-The game-night list should match the local file you copied in step 2. After the role move in the next section, it includes the instance, the security group and its rules, and the `blitz` A record. It does not include the backup bucket, and it does not include the instance role. The backup list should include the bucket and its versioning, encryption, and public-access block. The state list should include the state bucket and its policy.
+The game-night list should match the resources in the saved `game-night.tfstate`. After the role move in the next section, it includes the instance, the security group and its rules, and the `blitz` A record. It does not include the backup bucket, and it does not include the instance role. The backup list should include the bucket and its versioning, encryption, and public-access block. The state list should include the state bucket and its policy.
 
-If a list is empty and the local file was not, stop. The local files from step 2 are the backup. Do not apply.
+If a list is empty and the saved file was not, stop. The files from steps 2 and 3 are the backup. Do not apply.
 
 When the lists match what the Mac had, leave the local `terraform.tfstate` files where they are, or keep only the copies under `$HOME/dutch-blitz-tfstate-backup`. Either way they stay out of git. Do not delete the objects in S3.
 
@@ -123,7 +144,7 @@ The role, its inline policy, and its instance profile used to be resources in `t
 
 The role now lives in `terraform/game-role`. `up` only looks the profile up. A fresh create is the normal path, because a night that is down has already deleted the role.
 
-Check the game-night state first:
+Check the game-night state first. `terraform state list` works here only after the init in step 4. Before that init, the addresses are in the saved `game-night.tfstate` from step 2 (`terraform show` on that file).
 
 ```bash
 terraform -chdir=terraform state list
@@ -185,7 +206,7 @@ The CLI does not pass `-migrate-state`. After you pull this change, the first `u
 
 ## What CI does
 
-CI runs `terraform init -backend=false` and `terraform validate -var=enable_aws=false` in all five roots (`terraform/`, `terraform/backup`, `terraform/state`, `terraform/iam-bot`, `terraform/game-role`). `-backend=false` skips the S3 block, so the job never reads `backend.hcl` and never calls AWS. The workflow has no credentials.
+CI runs `terraform init -backend=false` and `terraform validate -var=enable_aws=false` in all five roots (`terraform/`, `terraform/backup`, `terraform/state`, `terraform/iam-bot`, `terraform/game-role`). `-backend=false` skips the S3 block, so the job never reads `backend.hcl` and never calls AWS. The workflow has no credentials. That flag is for `validate`. It does not initialize a backend, so it is not the bootstrap in step 3. `apply`, `plan`, and `state list` after it stop with `Backend initialization required`.
 
 ## Two machines at once
 

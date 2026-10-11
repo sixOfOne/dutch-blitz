@@ -5,13 +5,16 @@
 # read, and two copies of that file would drift. This root creates one
 # S3 bucket that both machines use.
 #
-# Apply it once, yourself, before the other roots are migrated:
-#   terraform -chdir=terraform/state init -backend=false -input=false
-#   terraform -chdir=terraform/state apply -var-file=terraform.tfvars
-# -backend=false is required the first time. The bucket does not exist
-# yet, so the backend block below has nowhere to store this root's own
-# state. After the bucket exists, migrate with -migrate-state. The
-# steps are in docs/remote-state.md.
+# Apply it once, yourself, before the other roots are migrated.
+# The s3 backend below cannot store this first apply: the bucket does
+# not exist yet. init -backend=false does not help. apply then stops
+# with "Backend initialization required", because that flag skips
+# backend initialization while the s3 block is still in this file.
+# Create a gitignored terraform/state/bootstrap_override.tf containing
+#   terraform { backend "local" {} }
+# then init and apply, delete the override, and
+# init -migrate-state -backend-config=../backend.hcl.
+# The steps are in docs/remote-state.md.
 #
 # prevent_destroy is a literal, same as the backup bucket. Terraform
 # will not delete this bucket until that line is removed. The bot
