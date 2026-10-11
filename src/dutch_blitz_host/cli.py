@@ -448,6 +448,9 @@ def cmd_up(*, do_init: bool) -> int:
     code = cmd_terraform(BACKUP_DIR, action="apply", do_init=do_init, var_file=TFVARS)
     if code != 0:
         return code
+    # The instance profile is not created here. terraform/game-role is
+    # owner-only. This apply looks the profile up by name and passes it
+    # to RunInstances. It fails if that root has not been applied.
     code = cmd_terraform(NIGHT_DIR, action="apply", do_init=do_init, var_file=TFVARS)
     if code != 0:
         return code
@@ -474,6 +477,7 @@ def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool
     steps = destroy_plan(skip_backup=skip_backup)
     print("Destroy plan:", ", ".join(steps))
     print(f"The backup bucket stack ({BACKUP_STACK}) is not destroyed.")
+    print("The instance role (terraform/game-role) is not destroyed.")
     if dry_run:
         print("Dry run only; nothing was destroyed.")
         return 0

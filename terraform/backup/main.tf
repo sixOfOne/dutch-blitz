@@ -1,5 +1,8 @@
 # Durable SQLite backup bucket. Separate state from the game-night instance
 # so `dutch_blitz_host down` can destroy the EC2 host without this bucket.
+# The instance role is not in this root either. `up` applies this directory,
+# so a role stored here would be something the bot could plan and rewrite.
+# The role is terraform/game-role, which only the owner applies.
 #
 # prevent_destroy below is a literal. Terraform will not delete the bucket
 # until that line is removed. After removing it, destroy only this directory:

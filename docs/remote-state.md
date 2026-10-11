@@ -16,7 +16,7 @@ DynamoDB is not used. It was the lock table for older Terraform. This repo's CI 
 | `terraform/state/terraform.tfvars` | no | The same bucket name, plus `enable_aws`, for the bootstrap apply. |
 | `*.tfstate` | no | Already gitignored. Keep the old ones as backups after migration. |
 
-The four keys, all in that one bucket:
+The five keys, all in that one bucket:
 
 | Root | Key |
 | --- | --- |
@@ -24,8 +24,9 @@ The four keys, all in that one bucket:
 | `terraform/` | `dutch-blitz/game-night/terraform.tfstate` |
 | `terraform/backup` | `dutch-blitz/backup/terraform.tfstate` |
 | `terraform/iam-bot` | `dutch-blitz/iam-bot/terraform.tfstate` |
+| `terraform/game-role` | `dutch-blitz/game-role/terraform.tfstate` |
 
-The bot user can read and write the game-night and backup keys, and their `.tflock` objects. It cannot read the other two. Those hold the bucket configuration and the budget email. Apply `terraform/state` and `terraform/iam-bot` with your own credentials.
+The bot user can read and write the game-night and backup keys, and their `.tflock` objects. It cannot read the other three. Those hold the bucket configuration, the budget email, and the instance role's policy document. Apply `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own credentials. `up` applies the backup root and the game-night root. It does not apply the role.
 
 ## One-time migration
 
@@ -110,11 +111,69 @@ terraform -chdir=terraform/backup state list
 terraform -chdir=terraform/state state list
 ```
 
-The game-night list should include the instance, the security group and its rules, the instance role, and the `blitz` A record. It should not include the backup bucket. The backup list should include the bucket and its versioning, encryption, and public-access block. The state list should include the state bucket and its policy.
+The game-night list should match the local file you copied in step 2. After the role move in the next section, it includes the instance, the security group and its rules, and the `blitz` A record. It does not include the backup bucket, and it does not include the instance role. The backup list should include the bucket and its versioning, encryption, and public-access block. The state list should include the state bucket and its policy.
 
 If a list is empty and the local file was not, stop. The local files from step 2 are the backup. Do not apply.
 
 When the lists match what the Mac had, leave the local `terraform.tfstate` files where they are, or keep only the copies under `$HOME/dutch-blitz-tfstate-backup`. Either way they stay out of git. Do not delete the objects in S3.
+
+### 7. Move the instance role into its own root
+
+The role, its inline policy, and its instance profile used to be resources in `terraform/`. `down` destroys that whole state, so the role was created again on the next `up`. It was not persistent. That is why the bot policy used to include `iam:PutRolePolicy`. With `PassRole` and `RunInstances`, that write lets the bot replace the role's document, launch an instance, and read the instance credentials.
+
+The role now lives in `terraform/game-role`. `up` only looks the profile up. A fresh create is the normal path, because a night that is down has already deleted the role.
+
+Check the game-night state first:
+
+```bash
+terraform -chdir=terraform state list
+```
+
+If none of `aws_iam_role.game[0]`, `aws_iam_role_policy.backup_bucket[0]`, and `aws_iam_instance_profile.game[0]` are in that list, there is nothing to import. Create the role once, after the backup bucket exists (this root reads the bucket; it does not create it):
+
+```bash
+terraform -chdir=terraform/game-role init -backend-config=../backend.hcl
+terraform -chdir=terraform/game-role apply -var-file=../terraform.tfvars
+```
+
+Do not pass `-migrate-state`. This root has no local state to copy. Init without that flag, then apply.
+
+If those three addresses are in the game-night state, a night is up, or `down` has not run since the role lived in that root. Do not run `down` first. `down` destroys every address still in that state, so it would delete the role along with the instance. Apply instead, and this night stays up with the same profile.
+
+Apply the game-night root. Do not destroy it. The `removed` blocks in `terraform/main.tf` name the resources without the `[0]` index (`aws_iam_role.game`, not `aws_iam_role.game[0]`). Terraform rejects an instance key in that block, and the block drops every instance of the resource. `destroy = false` keeps the role, the inline policy, and the profile in AWS. The plan should say they will no longer be managed. It should not say they will be destroyed. State list still prints the `[0]` addresses until this apply finishes.
+
+```bash
+terraform -chdir=terraform init -backend-config=backend.hcl
+terraform -chdir=terraform apply -var-file=terraform.tfvars
+```
+
+Confirm the role is still in AWS. The name is `<name_prefix>-game`. The default prefix is `dutch-blitz`.
+
+```bash
+aws iam get-role --role-name dutch-blitz-game
+```
+
+If that succeeds, import the three objects into the new root. Import is a CLI command, not an `import` block, so CI does not need a real role. The inline policy id is `<role name>:<policy name>`, and the policy name is `<name_prefix>-backup`.
+
+```bash
+terraform -chdir=terraform/game-role init -backend-config=../backend.hcl
+terraform -chdir=terraform/game-role import -var-file=../terraform.tfvars 'aws_iam_role.game[0]' dutch-blitz-game
+terraform -chdir=terraform/game-role import -var-file=../terraform.tfvars 'aws_iam_role_policy.backup_bucket[0]' 'dutch-blitz-game:dutch-blitz-backup'
+terraform -chdir=terraform/game-role import -var-file=../terraform.tfvars 'aws_iam_instance_profile.game[0]' dutch-blitz-game
+terraform -chdir=terraform/game-role plan -var-file=../terraform.tfvars
+```
+
+The plan should be empty, or a tag difference you can read. Do not let it replace the role.
+
+If `get-role` says the role does not exist, skip the import and run the apply from the empty-state case above. That creates a new role. The backup bucket must already exist.
+
+`terraform state mv` between the two keys needs a state pull, a local move, and a state push. The push overwrites the remote object. The `removed` blocks plus import leave S3 as the source of truth. Use that path.
+
+After this, `terraform state list` in `terraform/` does not include the role. `terraform state list` in `terraform/game-role` includes the role, the inline policy, and the profile. Later `down` destroys the instance, the security group, and the A record.
+
+Leave the `removed` blocks in `terraform/main.tf`. Once the addresses are gone they do nothing. Deleting the blocks while an old state still lists the role makes the next destroy delete the role.
+
+If `terraform/iam-bot` was applied before this change, apply it again so the attached policies drop `iam:PutRolePolicy` and the instance-profile association actions. [bot-iam.md](bot-iam.md) has that step. The bot's first `up` after that looks the profile up. It fails at the data source if `terraform/game-role` has not been applied.
 
 ## What the CLI does
 
@@ -126,7 +185,7 @@ The CLI does not pass `-migrate-state`. After you pull this change, the first `u
 
 ## What CI does
 
-CI runs `terraform init -backend=false` and `terraform validate -var=enable_aws=false` in all four roots. `-backend=false` skips the S3 block, so the job never reads `backend.hcl` and never calls AWS. The workflow has no credentials.
+CI runs `terraform init -backend=false` and `terraform validate -var=enable_aws=false` in all five roots (`terraform/`, `terraform/backup`, `terraform/state`, `terraform/iam-bot`, `terraform/game-role`). `-backend=false` skips the S3 block, so the job never reads `backend.hcl` and never calls AWS. The workflow has no credentials.
 
 ## Two machines at once
 

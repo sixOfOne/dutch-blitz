@@ -9,7 +9,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY_PATH = REPO / "docs" / "grok-bot-dutch-blitz-policy.json"
-ROOTS = ("terraform", "terraform/backup", "terraform/state", "terraform/iam-bot")
+ROOTS = (
+    "terraform",
+    "terraform/backup",
+    "terraform/state",
+    "terraform/iam-bot",
+    "terraform/game-role",
+)
 
 # Actions the bot must not have. A later edit that adds one should fail here
 # before it is applied.
@@ -25,6 +31,17 @@ FORBIDDEN_ACTIONS = {
     "iam:AttachGroupPolicy",
     "iam:PutUserPolicy",
     "iam:PutGroupPolicy",
+    "iam:PutRolePolicy",
+    "iam:DeleteRolePolicy",
+    "iam:GetRolePolicy",
+    "iam:CreateRole",
+    "iam:DeleteRole",
+    "iam:UpdateRole",
+    "iam:UpdateAssumeRolePolicy",
+    "iam:CreateInstanceProfile",
+    "iam:DeleteInstanceProfile",
+    "iam:AddRoleToInstanceProfile",
+    "iam:RemoveRoleFromInstanceProfile",
     "iam:DeleteUser",
     "s3:DeleteBucket",
     "s3:DeleteObjectVersion",
@@ -32,6 +49,10 @@ FORBIDDEN_ACTIONS = {
     "ec2:CreateKeyPair",
     "ec2:DeleteKeyPair",
     "ec2:ImportKeyPair",
+    "ec2:ModifyInstanceAttribute",
+    "ec2:AssociateIamInstanceProfile",
+    "ec2:DisassociateIamInstanceProfile",
+    "ec2:ReplaceIamInstanceProfileAssociation",
     "route53:CreateHostedZone",
     "route53:DeleteHostedZone",
     "route53:ChangeTagsForResource",
@@ -78,12 +99,13 @@ def test_bot_policy_is_json_and_keeps_placeholders():
 
 def test_bot_policy_is_split_under_the_managed_policy_quota():
     # IAM ignores whitespace. Inline user policies stop at 2,048 characters.
-    # Managed policies stop at 6,144. The document is past both, so
-    # terraform/iam-bot attaches two policies. The cut is the PassRole
-    # statement: compute is that statement and everything before it.
+    # Managed policies stop at 6,144. The document is over the inline limit,
+    # so terraform/iam-bot attaches two policies even when the whole file
+    # fits in one managed policy. The cut is the PassRole statement:
+    # compute is that statement and everything before it.
     policy = _policy()
     compact = json.dumps(policy, separators=(",", ":"))
-    assert len(compact) > 6144
+    assert len(compact) > 2048
     sids = [statement["Sid"] for statement in policy["Statement"]]
     cut = sids.index("PassGameRoleToEc2Only") + 1
     for half in (policy["Statement"][:cut], policy["Statement"][cut:]):
@@ -94,6 +116,7 @@ def test_bot_policy_is_split_under_the_managed_policy_quota():
         assert len(encoded) <= 6144
     assert "ChangeOnlyBlitzARecord" in sids[cut:]
     assert "LockGameNightState" in sids[cut:]
+    assert "ReadGameInstanceProfile" in sids[:cut]
 
 
 def test_bot_policy_refuses_admin_and_bucket_delete():
@@ -104,6 +127,9 @@ def test_bot_policy_refuses_admin_and_bucket_delete():
     assert "ce:GetCostAndUsage" in actions
     assert "budgets:ViewBudget" in actions
     assert "iam:PassRole" in actions
+    assert "iam:GetInstanceProfile" in actions
+    iam_actions = {action for action in actions if action.startswith("iam:")}
+    assert iam_actions == {"iam:PassRole", "iam:GetInstanceProfile"}
     assert "route53:ChangeResourceRecordSets" in actions
 
 
@@ -128,7 +154,12 @@ def test_route53_changes_are_limited_to_blitz_and_clerk_is_denied():
     ]["route53:ChangeResourceRecordSetsRecordTypes"]
     assert denied_types == ["NS", "SOA", "CNAME"]
     passed = by_sid["PassGameRoleToEc2Only"]
+    assert passed["Action"] == "iam:PassRole"
+    assert passed["Resource"] == "arn:aws:iam::000000000000:role/dutch-blitz-game"
     assert passed["Condition"]["StringEquals"]["iam:PassedToService"] == "ec2.amazonaws.com"
+    profile = by_sid["ReadGameInstanceProfile"]
+    assert profile["Action"] == "iam:GetInstanceProfile"
+    assert profile["Resource"] == "arn:aws:iam::000000000000:instance-profile/dutch-blitz-game"
 
 
 def test_state_delete_is_only_the_lock_object():
@@ -159,7 +190,30 @@ def test_every_root_uses_s3_lockfiles_and_ci_skips_the_backend():
         assert root in workflow or (root == "terraform" and "terraform terraform/backup" in workflow)
     assert "terraform/state" in workflow
     assert "terraform/iam-bot" in workflow
+    assert "terraform/game-role" in workflow
     assert "init -backend=false" in workflow
     iam = (REPO / "terraform" / "iam-bot" / "main.tf").read_text(encoding="utf-8")
     assert "docs/grok-bot-dutch-blitz-policy.json" in iam
     assert 'resource "aws_iam_access_key"' not in iam
+    assert "ReadGameInstanceProfile" in iam
+    assert "ManageGameRole" not in iam
+    assert "AdjustInstanceAndAttachProfile" not in iam
+
+
+def test_game_role_is_owner_only_and_night_stack_only_reads_it():
+    policy = POLICY_PATH.read_text(encoding="utf-8")
+    assert "game-role/terraform.tfstate" not in policy
+    night = (REPO / "terraform" / "main.tf").read_text(encoding="utf-8")
+    assert 'resource "aws_iam_role"' not in night
+    assert 'resource "aws_iam_role_policy"' not in night
+    assert 'resource "aws_iam_instance_profile"' not in night
+    assert 'data "aws_iam_instance_profile" "game"' in night
+    assert "from = aws_iam_role.game\n" in night
+    assert "from = aws_iam_role_policy.backup_bucket\n" in night
+    assert "from = aws_iam_instance_profile.game\n" in night
+    assert night.count("destroy = false") >= 3
+    role = (REPO / "terraform" / "game-role" / "main.tf").read_text(encoding="utf-8")
+    assert 'resource "aws_iam_role" "game"' in role
+    assert 'resource "aws_iam_instance_profile" "game"' in role
+    assert "dutch-blitz/game-role/terraform.tfstate" in role
+    assert "use_lockfile = true" in role

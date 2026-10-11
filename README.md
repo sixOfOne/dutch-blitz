@@ -50,7 +50,7 @@ Every pull request, and every push to `main`, runs the [CI workflow](.github/wor
 Two checks run in parallel:
 
 - **Python tests** runs the suite on Python 3.11, the version the game-night host installs. pip caches the wheels from `requirements.txt` and `requirements-dev.txt`.
-- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then runs `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, and `terraform/iam-bot/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. It parses `ansible/playbook.yml` with `--syntax-check` against `ansible/inventory/syntax-check.yml`, then runs `ansible-lint`. That inventory is only a stand-in. The real one is written on a game night and is gitignored.
+- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then runs `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, `terraform/iam-bot/`, and `terraform/game-role/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. It parses `ansible/playbook.yml` with `--syntax-check` against `ansible/inventory/syntax-check.yml`, then runs `ansible-lint`. That inventory is only a stand-in. The real one is written on a game night and is gitignored.
 
 A newer push to the same branch cancels the run that is still going, so an outdated commit does not spend the rest of its minutes.
 
@@ -69,6 +69,8 @@ terraform -chdir=terraform/state init -backend=false -input=false
 terraform -chdir=terraform/state validate -var=enable_aws=false
 terraform -chdir=terraform/iam-bot init -backend=false -input=false
 terraform -chdir=terraform/iam-bot validate -var=enable_aws=false
+terraform -chdir=terraform/game-role init -backend=false -input=false
+terraform -chdir=terraform/game-role validate -var=enable_aws=false
 
 pip install 'ansible-core==2.19.14' 'ansible-lint==26.9.0'
 ansible-playbook ansible/playbook.yml --syntax-check -i ansible/inventory/syntax-check.yml
@@ -177,7 +179,8 @@ On AWS, before the first `up`:
 - Use credentials Terraform can see (environment or `~/.aws`). The Mac keeps using your credentials. The Linux assistant uses the bot user below, not yours.
 - The account needs a default VPC in `us-east-2`.
 - Create an EC2 key pair named `neo-atari` in `us-east-2` if it is not already there. Key pairs are regional. The private key this CLI uses is `~/.ssh/neo-atari.pem`. The assistant needs its own copy of that private key, mode `0600`, and that file is not committed.
-- Pick a bucket name that is free worldwide. The first `up` creates it. Later nights reuse it.
+- Pick a bucket name that is free worldwide. Apply `terraform/backup` once so the bucket exists, or let the first `up` create it. Later nights reuse it.
+- Apply `terraform/game-role` yourself, after the bucket exists and before the first `up`. That root is the instance role and instance profile. `up` only looks the profile up by name. `down` does not delete it. The steps, including a night that still has the role in the game-night state, are in [docs/remote-state.md](docs/remote-state.md).
 - If the assistant also runs `up` or `down`, add that machine's public IP as a `/32` to `ssh_ingress_cidrs` in the gitignored `terraform/terraform.tfvars`. `ssh_ingress_cidr` stays the first machine. HTTP and HTTPS stay open.
 
 ### Credentials for the Linux assistant
@@ -206,7 +209,7 @@ export AWS_DEFAULT_REGION=us-east-2
 aws sts get-caller-identity
 ```
 
-`get-caller-identity` should print the bot user. Then `PYTHONPATH=src python3 -m dutch_blitz_host up` uses that profile. Your Mac does not set this profile. You keep applying `terraform/state` and `terraform/iam-bot` with your own user. The bot is denied those actions.
+`get-caller-identity` should print the bot user. Then `PYTHONPATH=src python3 -m dutch_blitz_host up` uses that profile. Your Mac does not set this profile. You keep applying `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own user. The bot is denied those actions. `up` applies the backup bucket and the game-night instance. It does not apply the role.
 
 An IAM user can hold two access keys. Rotate without a gap:
 
@@ -278,8 +281,9 @@ app/views.py       totals and the words on the page
 app/templates/     server-rendered HTML
 app/static/        CSS, score form, and Clerk cookie refresh
 src/dutch_blitz_host/  game-night CLI (apply, configure, backup, destroy)
-terraform/         EC2 host, destroyed by down; S3 backend via backend.hcl
+terraform/         EC2 host and blitz A record, destroyed by down; looks up the instance profile
 terraform/backup/  S3 snapshot bucket, kept across nights
+terraform/game-role/ instance role and profile (you apply this; down does not)
 terraform/state/   bootstrap bucket for Terraform state (you apply this)
 terraform/iam-bot/ bot user, least-privilege policy, and $10 budget (you apply this)
 docs/remote-state.md  one-time migration from local tfstate

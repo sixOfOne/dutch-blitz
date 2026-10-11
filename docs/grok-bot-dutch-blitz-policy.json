@@ -118,57 +118,10 @@
       }
     },
     {
-      "Sid": "AdjustInstanceAndAttachProfile",
+      "Sid": "ReadGameInstanceProfile",
       "Effect": "Allow",
-      "Action": [
-        "ec2:ModifyInstanceAttribute",
-        "ec2:AssociateIamInstanceProfile",
-        "ec2:DisassociateIamInstanceProfile",
-        "ec2:ReplaceIamInstanceProfileAssociation"
-      ],
-      "Resource": "arn:aws:ec2:us-east-2:000000000000:instance/*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "us-east-2"
-        }
-      }
-    },
-    {
-      "Sid": "ManageGameRole",
-      "Effect": "Allow",
-      "Action": [
-        "iam:CreateRole",
-        "iam:DeleteRole",
-        "iam:GetRole",
-        "iam:UpdateRole",
-        "iam:UpdateAssumeRolePolicy",
-        "iam:TagRole",
-        "iam:UntagRole",
-        "iam:ListRolePolicies",
-        "iam:ListAttachedRolePolicies",
-        "iam:ListInstanceProfilesForRole",
-        "iam:GetRolePolicy",
-        "iam:PutRolePolicy",
-        "iam:DeleteRolePolicy"
-      ],
-      "Resource": "arn:aws:iam::000000000000:role/dutch-blitz-game"
-    },
-    {
-      "Sid": "ManageGameInstanceProfile",
-      "Effect": "Allow",
-      "Action": [
-        "iam:CreateInstanceProfile",
-        "iam:DeleteInstanceProfile",
-        "iam:GetInstanceProfile",
-        "iam:AddRoleToInstanceProfile",
-        "iam:RemoveRoleFromInstanceProfile",
-        "iam:TagInstanceProfile",
-        "iam:UntagInstanceProfile"
-      ],
-      "Resource": [
-        "arn:aws:iam::000000000000:instance-profile/dutch-blitz-game",
-        "arn:aws:iam::000000000000:role/dutch-blitz-game"
-      ]
+      "Action": "iam:GetInstanceProfile",
+      "Resource": "arn:aws:iam::000000000000:instance-profile/dutch-blitz-game"
     },
     {
       "Sid": "PassGameRoleToEc2Only",

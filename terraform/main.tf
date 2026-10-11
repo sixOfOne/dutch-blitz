@@ -1,6 +1,8 @@
 # Game-night instance. Destroying this stack does not delete the S3 backup
-# bucket; that bucket lives in terraform/backup with its own state.
-# Both states live in the bucket from terraform/state, not in a local file.
+# bucket (terraform/backup) or the instance role (terraform/game-role).
+# Those two stay up across nights. This stack only looks the instance
+# profile up by name and passes it to RunInstances.
+# State lives in the bucket from terraform/state, not in a local file.
 terraform {
   # 1.10 added S3 lock files (use_lockfile). CI runs 1.16.5.
   required_version = ">= 1.10.0"
@@ -132,11 +134,6 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-data "aws_s3_bucket" "backups" {
-  count  = var.enable_aws ? 1 : 0
-  bucket = var.backup_bucket_name
-}
-
 resource "aws_security_group" "game" {
   count = var.enable_aws ? 1 : 0
   name  = "${var.name_prefix}-game"
@@ -195,57 +192,13 @@ resource "aws_security_group_rule" "egress" {
   description       = "All outbound"
 }
 
-data "aws_iam_policy_document" "assume_ec2" {
-  count = var.enable_aws ? 1 : 0
-
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["ec2.amazonaws.com"]
-    }
-  }
-}
-
-data "aws_iam_policy_document" "backup_bucket" {
-  count = var.enable_aws ? 1 : 0
-
-  statement {
-    sid       = "ListBackupBucket"
-    actions   = ["s3:ListBucket"]
-    resources = [data.aws_s3_bucket.backups[0].arn]
-  }
-
-  statement {
-    sid       = "ReadWriteBackupObjects"
-    actions   = ["s3:GetObject", "s3:PutObject"]
-    resources = ["${data.aws_s3_bucket.backups[0].arn}/*"]
-  }
-}
-
-resource "aws_iam_role" "game" {
-  count              = var.enable_aws ? 1 : 0
-  name               = "${var.name_prefix}-game"
-  assume_role_policy = data.aws_iam_policy_document.assume_ec2[0].json
-
-  tags = {
-    Name    = "${var.name_prefix}-game"
-    Project = "dutch-blitz"
-  }
-}
-
-resource "aws_iam_role_policy" "backup_bucket" {
-  count  = var.enable_aws ? 1 : 0
-  name   = "${var.name_prefix}-backup"
-  role   = aws_iam_role.game[0].id
-  policy = data.aws_iam_policy_document.backup_bucket[0].json
-}
-
-resource "aws_iam_instance_profile" "game" {
+# The profile is created by terraform/game-role, which only the owner
+# applies. This data source calls iam:GetInstanceProfile. It does not
+# create, edit, or delete the role. up fails here if that root has not
+# been applied yet, which is the point: the bot cannot invent a role.
+data "aws_iam_instance_profile" "game" {
   count = var.enable_aws ? 1 : 0
   name  = "${var.name_prefix}-game"
-  role  = aws_iam_role.game[0].name
 }
 
 resource "aws_instance" "game" {
@@ -254,7 +207,7 @@ resource "aws_instance" "game" {
   instance_type               = var.instance_type
   key_name                    = var.key_name
   vpc_security_group_ids      = [aws_security_group.game[0].id]
-  iam_instance_profile        = aws_iam_instance_profile.game[0].name
+  iam_instance_profile        = data.aws_iam_instance_profile.game[0].name
   associate_public_ip_address = true
 
   root_block_device {
@@ -278,6 +231,42 @@ data "aws_route53_zone" "game" {
   count        = local.manage_dns ? 1 : 0
   name         = "${local.dns_zone}."
   private_zone = false
+}
+
+# These three used to be resources in this root, so a night that is up
+# right now still has them in this state. removed tells the next apply
+# to forget them without deleting them in AWS. down destroys everything
+# still in state; without destroy = false it would delete the role on
+# the way out and the instance would lose S3. After this apply, the
+# addresses are gone from state. Leave the blocks here: a removed block
+# that matches nothing is a no-op, and deleting them early makes an old
+# state destroy the role. Adoption into terraform/game-role is
+# docs/remote-state.md.
+# from is the resource, not the [0] instance. count makes one instance,
+# and a removed block cannot name the instance key. All instances of
+# that resource leave state. destroy = false keeps the AWS object.
+removed {
+  from = aws_iam_role.game
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_iam_role_policy.backup_bucket
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_iam_instance_profile.game
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "aws_route53_record" "game" {

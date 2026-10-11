@@ -44,5 +44,5 @@ output "backup_bucket" {
 
 output "backup_note" {
   description = "Reminds operators that destroying this stack keeps the backup bucket."
-  value       = "terraform destroy in this directory deletes the instance only. The backup bucket is managed by terraform/backup."
+  value       = "terraform destroy in this directory deletes the instance only. The backup bucket is terraform/backup. The instance role is terraform/game-role."
 }

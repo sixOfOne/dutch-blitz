@@ -41,7 +41,7 @@ variable "dns_record_name" {
 }
 
 variable "name_prefix" {
-  description = "Prefix of the instance role and instance profile. The game-night stack names both <prefix>-game."
+  description = "Prefix of the instance role and instance profile in terraform/game-role. Both are named <prefix>-game. The game-night stack looks that profile up."
   type        = string
   default     = "dutch-blitz"
 }

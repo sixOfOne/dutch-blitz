@@ -9,10 +9,12 @@
 # The policy text is docs/grok-bot-dutch-blitz-policy.json. This root
 # only substitutes the placeholders. Edit the JSON, then apply again.
 # An inline policy on a user is limited to 2,048 characters. A managed
-# policy allows 6,144, and this document is larger than that too, so
-# apply attaches it as two managed policies. The split is the quota,
+# policy allows 6,144. Apply attaches the document as two managed
+# policies so neither half is the whole file. The split is the quota,
 # not two different privilege levels. The bot is still not granted
 # iam:CreatePolicy or iam:AttachUserPolicy; your credentials do that.
+# The bot has no iam write on the game role. That role is
+# terraform/game-role, which this policy cannot apply.
 terraform {
   required_version = ">= 1.10.0"
 
@@ -107,9 +109,7 @@ locals {
     "DeleteTaggedGameInstanceAndSecurityGroup",
     "ManageRulesOnTaggedGameSecurityGroup",
     "TagGameNightResources",
-    "AdjustInstanceAndAttachProfile",
-    "ManageGameRole",
-    "ManageGameInstanceProfile",
+    "ReadGameInstanceProfile",
     "PassGameRoleToEc2Only",
   ])
   compute_statements = [
@@ -234,7 +234,7 @@ resource "null_resource" "bot_checks" {
 resource "aws_iam_policy" "compute" {
   count       = var.enable_aws ? 1 : 0
   name        = "${var.bot_user_name}-compute"
-  description = "EC2, the game role, and PassRole for dutch_blitz_host up and down."
+  description = "EC2 and PassRole for the pre-existing game role, for dutch_blitz_host up and down."
   policy      = local.compute_policy_json
 
   tags = {
