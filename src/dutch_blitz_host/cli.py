@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     up = subparsers.add_parser("up", help="Create the bucket if needed, start the instance, configure it, print the URL")
+    _add_ssh_key(up)
     _add_init(up)
 
     apply = subparsers.add_parser("apply", help="Terraform apply the game-night instance (local no-op until enable_aws=true)")
@@ -60,21 +61,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     configure = subparsers.add_parser("configure", help="Ansible: install the app, Caddy, and restore the latest backup")
     configure.add_argument("--dry-run", action="store_true", help="print the Ansible command only")
-    configure.add_argument(
-        "--ssh-key",
-        default=str(SSH_KEY_DEFAULT),
-        help=f"SSH private key (default: {SSH_KEY_DEFAULT})",
-    )
+    _add_ssh_key(configure)
 
     backup = subparsers.add_parser("backup", help="Upload a consistent SQLite snapshot to S3")
-    backup.add_argument("--ssh-key", default=str(SSH_KEY_DEFAULT))
+    _add_ssh_key(backup)
     backup.add_argument("--dry-run", action="store_true", help="print the SSH command only")
 
     destroy = subparsers.add_parser(
         "destroy",
         help="Back up the score book, then terraform destroy the instance. The S3 bucket stays.",
     )
-    destroy.add_argument("--ssh-key", default=str(SSH_KEY_DEFAULT))
+    _add_ssh_key(destroy)
     destroy.add_argument("--dry-run", action="store_true", help="print the destroy plan only")
     destroy.add_argument(
         "--skip-backup",
@@ -84,11 +81,29 @@ def build_parser() -> argparse.ArgumentParser:
     _add_init(destroy)
 
     down = subparsers.add_parser("down", help="Same as destroy")
-    down.add_argument("--ssh-key", default=str(SSH_KEY_DEFAULT))
+    _add_ssh_key(down)
     down.add_argument("--dry-run", action="store_true")
     down.add_argument("--skip-backup", action="store_true")
     _add_init(down)
     return parser
+
+
+def _add_ssh_key(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ssh-key",
+        default=None,
+        help="SSH private key for ec2-user. Default: DUTCH_BLITZ_SSH_KEY, or ~/.ssh/neo-atari.pem.",
+    )
+
+
+def resolve_ssh_key(explicit: str | None) -> str:
+    """Flag, then DUTCH_BLITZ_SSH_KEY, then ~/.ssh/neo-atari.pem."""
+    if explicit is not None and explicit.strip():
+        return str(Path(explicit).expanduser())
+    env = os.environ.get("DUTCH_BLITZ_SSH_KEY", "").strip()
+    if env:
+        return str(Path(env).expanduser())
+    return str(SSH_KEY_DEFAULT)
 
 
 def _add_init(parser: argparse.ArgumentParser) -> None:
@@ -425,7 +440,11 @@ def _dns_ready(tfvars: dict[str, str], *, hostname: str, public_ip: str, dry_run
         print(f"Dry run: would wait for {fqdn} to resolve to {public_ip}.")
         return True
     print(f"Waiting for {fqdn} to resolve to {public_ip} before requesting a certificate.")
-    if wait_for_a_record(fqdn, public_ip, zone=fqdn.split(".", 1)[1]):
+    try:
+        ready = wait_for_a_record(fqdn, public_ip, zone=fqdn.split(".", 1)[1])
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if ready:
         return True
     print(
         f"{fqdn} did not resolve to {public_ip} on the authoritative nameservers "
@@ -436,7 +455,7 @@ def _dns_ready(tfvars: dict[str, str], *, hostname: str, public_ip: str, dry_run
     return False
 
 
-def cmd_up(*, do_init: bool) -> int:
+def cmd_up(*, do_init: bool, ssh_key: str) -> int:
     tfvars = load_tfvars()
     if not aws_enabled(tfvars):
         raise SystemExit(
@@ -455,14 +474,16 @@ def cmd_up(*, do_init: bool) -> int:
     if code != 0:
         return code
     ip, _hostname, _bucket = require_aws_outputs(terraform_outputs(NIGHT_DIR))
-    if not wait_for_ssh(ip, SSH_KEY_DEFAULT):
+    key = Path(ssh_key).expanduser()
+    if not wait_for_ssh(ip, key):
         print(
-            f"SSH on {ip} did not accept a login within {SSH_WAIT_TIMEOUT_SECONDS} seconds. "
-            "When it does, run: PYTHONPATH=src python3 -m dutch_blitz_host configure",
+            f"SSH on {ip} did not accept {key} within {SSH_WAIT_TIMEOUT_SECONDS} seconds. "
+            "When it does, run: "
+            f"PYTHONPATH=src python3 -m dutch_blitz_host configure --ssh-key {key}",
             file=sys.stderr,
         )
         return 1
-    code = cmd_configure(ssh_key=str(SSH_KEY_DEFAULT), dry_run=False)
+    code = cmd_configure(ssh_key=str(key), dry_run=False)
     if code != 0:
         return code
     outputs = terraform_outputs(NIGHT_DIR)
@@ -499,8 +520,9 @@ def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    ssh_key = resolve_ssh_key(getattr(args, "ssh_key", None))
     if args.command == "up":
-        return cmd_up(do_init=args.init)
+        return cmd_up(do_init=args.init, ssh_key=ssh_key)
     if args.command == "apply":
         return cmd_terraform(
             NIGHT_DIR,
@@ -516,12 +538,12 @@ def main(argv: list[str] | None = None) -> int:
             var_file=TFVARS,
         )
     if args.command == "configure":
-        return cmd_configure(ssh_key=args.ssh_key, dry_run=args.dry_run)
+        return cmd_configure(ssh_key=ssh_key, dry_run=args.dry_run)
     if args.command == "backup":
-        return cmd_backup(ssh_key=args.ssh_key, dry_run=args.dry_run)
+        return cmd_backup(ssh_key=ssh_key, dry_run=args.dry_run)
     if args.command in {"destroy", "down"}:
         return cmd_destroy(
-            ssh_key=args.ssh_key,
+            ssh_key=ssh_key,
             dry_run=args.dry_run,
             skip_backup=args.skip_backup,
             do_init=args.init,

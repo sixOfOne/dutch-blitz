@@ -156,7 +156,7 @@ dns_zone_name   = "sixofonedev.com"
 dns_record_name = "blitz"
 ```
 
-`up` creates an A record for that name, TTL 60 seconds, pointing at the new public IP. It waits until the authoritative nameservers and the public resolvers (1.1.1.1 and 8.8.8.8) answer with that IP, then Caddy requests a certificate. `down` deletes the A record with the instance. The hosted zone stays. Terraform looks the zone up by name and does not create it, destroy it, or change its NS, SOA, or the Clerk records (`clerk`, `accounts`, `clkmail`, `clk._domainkey`, `clk2._domainkey`).
+`up` creates an A record for that name, TTL 60 seconds, pointing at the new public IP. It waits until the authoritative nameservers and the public resolvers (1.1.1.1 and 8.8.8.8) answer with that IP, then Caddy requests a certificate. That is the Mac's path, and it is the default. On a network that intercepts port 53, set `DUTCH_BLITZ_DNS_MODE=doh`. The wait then uses DNS over HTTPS (`https://dns.google/resolve`, then Cloudflare) and, when the AWS CLI can read the zone, checks the A record with Route 53 `ListResourceRecordSets`. The same HTTPS path runs on its own when a classic lookup returns an address in `198.18.0.0/15` or an empty answer. A real but stale address stays on port 53. `down` deletes the A record with the instance. The hosted zone stays. Terraform looks the zone up by name and does not create it, destroy it, or change its NS, SOA, or the Clerk records (`clerk`, `accounts`, `clkmail`, `clk._domainkey`, `clk2._domainkey`).
 
 Add `https://blitz.sixofonedev.com` once as an allowed origin in the [Clerk dashboard](https://dashboard.clerk.com) (and under Domains if the production instance asks). Later nights reuse that origin. The controller `.env` holds the production `pk_live_` / `sk_live_` keys. The app reads the Frontend API host from the publishable key, which is `clerk.sixofonedev.com`.
 
@@ -178,10 +178,13 @@ On AWS, before the first `up`:
 
 - Use credentials Terraform can see (environment or `~/.aws`). The Mac keeps using your credentials. The Linux assistant uses the bot user below, not yours.
 - The account needs a default VPC in `us-east-2`.
-- Create an EC2 key pair named `neo-atari` in `us-east-2` if it is not already there. Key pairs are regional. The private key this CLI uses is `~/.ssh/neo-atari.pem`. The assistant needs its own copy of that private key, mode `0600`, and that file is not committed.
+- Create an EC2 key pair named `neo-atari` in `us-east-2` if it is not already there. Key pairs are regional. The private key defaults to `~/.ssh/neo-atari.pem`. `up`, `configure`, `backup`, and `down` all take `--ssh-key`. When the flag is omitted they use `DUTCH_BLITZ_SSH_KEY`, and when that is unset they use the pem path above. The assistant's private key stays on that machine, mode `0600`, and is not committed.
 - Pick a bucket name that is free worldwide. Apply `terraform/backup` once so the bucket exists, or let the first `up` create it. Later nights reuse it.
 - Apply `terraform/game-role` yourself, after the bucket exists and before the first `up`. That root is the instance role and instance profile. `up` only looks the profile up by name. `down` does not delete it. The steps, including a night that still has the role in the game-night state, are in [docs/remote-state.md](docs/remote-state.md).
-- If the assistant also runs `up` or `down`, add that machine's public IP as a `/32` to `ssh_ingress_cidrs` in the gitignored `terraform/terraform.tfvars`. `ssh_ingress_cidr` stays the first machine. HTTP and HTTPS stay open.
+- If the assistant also runs `up` or `down`, add every address that machine might egress from as a `/32` in `ssh_ingress_cidrs`. `ssh_ingress_cidr` stays the first machine. HTTP and HTTPS stay open.
+- Both operators keep the same tfvars values for the shared settings `ssh_ingress_cidrs` and `extra_ssh_public_keys`. State is shared. A different list on one machine makes that machine's apply rewrite the security group or the instance user data of the night the other machine is running.
+
+`extra_ssh_public_keys` is a list of `ssh-ed25519` or `ssh-rsa` public keys. When it is non-empty, the instance user data is a `#cloud-config` `ssh_authorized_keys` block for the image default user, which on Amazon Linux 2023 is `ec2-user`. The `neo-atari` key pair is still installed. An empty list leaves user data unset, so a night that is already up is not replaced. `user_data_replace_on_change` is false. Put the assistant's public key in that list before the next `up`, and point `DUTCH_BLITZ_SSH_KEY` at the matching private key. Cloud-init reads user data on first boot.
 
 ### Credentials for the Linux assistant
 
@@ -209,7 +212,25 @@ export AWS_DEFAULT_REGION=us-east-2
 aws sts get-caller-identity
 ```
 
-`get-caller-identity` should print the bot user. Then `PYTHONPATH=src python3 -m dutch_blitz_host up` uses that profile. Your Mac does not set this profile. You keep applying `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own user. The bot is denied those actions. `up` applies the backup bucket and the game-night instance. It does not apply the role.
+`get-caller-identity` should print the bot user. Then `up` and `down` on that machine use the bot profile, DoH, and the bot's SSH key:
+
+```bash
+export AWS_PROFILE=grok-bot-dutch-blitz
+export AWS_DEFAULT_REGION=us-east-2
+export DUTCH_BLITZ_DNS_MODE=doh
+export DUTCH_BLITZ_SSH_KEY=~/.ssh/grok-bot-dutch-blitz
+PYTHONPATH=src python3 -m dutch_blitz_host up
+```
+
+`DUTCH_BLITZ_SSH_KEY` is the private key. The matching public key belongs in `extra_ssh_public_keys` in the gitignored tfvars, the same list the Mac has. `--ssh-key` overrides the variable for one command. `configure`, `backup`, and `down` read it the same way:
+
+```bash
+PYTHONPATH=src python3 -m dutch_blitz_host down
+```
+
+Leave `DUTCH_BLITZ_DNS_MODE` unset on the Mac. Port 53 there is the default. Your Mac does not set the bot profile. You keep applying `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own user. The bot is denied those actions. `up` applies the backup bucket and the game-night instance. It does not apply the role. Apply `terraform/iam-bot` again with your own credentials after the bot policy changes. Until that apply, the bot's refresh of the backup bucket stays denied.
+
+The bot's egress address rotates, so `ssh_ingress_cidrs` holds each `/32` it might use. Copy that list and `extra_ssh_public_keys` onto both machines. Do not let one copy drift: the next apply would change the running night.
 
 An IAM user can hold two access keys. Rotate without a gap:
 

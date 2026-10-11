@@ -50,6 +50,22 @@ variable "ssh_ingress_cidrs" {
   default     = []
 }
 
+variable "extra_ssh_public_keys" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack. The game-night stack installs these keys for ec2-user."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for key in var.extra_ssh_public_keys :
+      can(regex("^(ssh-ed25519|ssh-rsa) ", key)) &&
+      !strcontains(key, "\n") &&
+      !strcontains(key, "\r")
+    ])
+    error_message = "Each extra_ssh_public_keys entry must be one ssh-ed25519 or ssh-rsa public key line."
+  }
+}
+
 variable "backup_bucket_name" {
   description = "Globally unique S3 bucket for SQLite snapshots. This stack creates it and refuses to destroy it."
   type        = string

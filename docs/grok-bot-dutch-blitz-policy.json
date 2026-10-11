@@ -237,13 +237,30 @@
         "s3:GetEncryptionConfiguration",
         "s3:PutEncryptionConfiguration",
         "s3:GetBucketPublicAccessBlock",
-        "s3:PutBucketPublicAccessBlock",
-        "s3:GetObjectLockConfiguration"
+        "s3:PutBucketPublicAccessBlock"
       ],
       "Resource": [
         "arn:aws:s3:::${backup_bucket_name}",
         "arn:aws:s3:::${backup_bucket_name}/*"
       ]
+    },
+    {
+      "Sid": "ReadBackupBucketConfiguration",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketPolicy",
+        "s3:GetBucketAcl",
+        "s3:GetBucketCORS",
+        "s3:GetBucketWebsite",
+        "s3:GetAccelerateConfiguration",
+        "s3:GetBucketRequestPayment",
+        "s3:GetBucketLogging",
+        "s3:GetLifecycleConfiguration",
+        "s3:GetReplicationConfiguration",
+        "s3:GetBucketObjectLockConfiguration",
+        "s3:GetBucketOwnershipControls"
+      ],
+      "Resource": "arn:aws:s3:::${backup_bucket_name}"
     },
     {
       "Sid": "ReadWriteGameNightState",

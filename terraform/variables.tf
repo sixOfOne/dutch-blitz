@@ -41,9 +41,25 @@ variable "ssh_ingress_cidr" {
 }
 
 variable "ssh_ingress_cidrs" {
-  description = "Extra SSH CIDRs, such as the Linux assistant's public IP as a /32. ssh_ingress_cidr is still required. The game-night security group allows the whole list."
+  description = "Extra SSH CIDRs, such as the Linux assistant's public IP as a /32. ssh_ingress_cidr is still required. The game-night security group allows the whole list. Both operators keep the same list: state is shared, and a different value rewrites the security group."
   type        = list(string)
   default     = []
+}
+
+variable "extra_ssh_public_keys" {
+  description = "SSH public keys added to ec2-user at boot, besides the EC2 key pair. Empty leaves user_data unset. Both operators keep the same list in the shared tfvars."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for key in var.extra_ssh_public_keys :
+      can(regex("^(ssh-ed25519|ssh-rsa) ", key)) &&
+      !strcontains(key, "\n") &&
+      !strcontains(key, "\r")
+    ])
+    error_message = "Each extra_ssh_public_keys entry must be one ssh-ed25519 or ssh-rsa public key line."
+  }
 }
 
 variable "backup_bucket_name" {

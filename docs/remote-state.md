@@ -212,4 +212,4 @@ CI runs `terraform init -backend=false` and `terraform validate -var=enable_aws=
 
 Run `up` or `down` on one machine at a time. The lock object is `<key>.tflock`. Releasing it is an `s3:DeleteObject` on that object only. Versioning on the bucket keeps older state objects if a write goes wrong. The bot is not allowed `s3:DeleteObjectVersion` or `s3:DeleteBucket`.
 
-`ssh_ingress_cidr` is still one CIDR. Add the other machine's public `/32` to `ssh_ingress_cidrs` in the gitignored `terraform/terraform.tfvars` so both can open SSH. HTTP and HTTPS stay open either way.
+`ssh_ingress_cidr` is still one CIDR. Add every public `/32` the other machine might use to `ssh_ingress_cidrs` in the gitignored `terraform/terraform.tfvars` so both can open SSH. HTTP and HTTPS stay open either way. Both operators keep the same `ssh_ingress_cidrs` and `extra_ssh_public_keys`. State is shared, so a different value on one machine rewrites the security group or the instance user data of the night the other is running.
