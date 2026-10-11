@@ -253,6 +253,70 @@ def test_route53_changes_are_limited_to_blitz_and_clerk_is_denied():
     assert profile["Resource"] == "arn:aws:iam::000000000000:instance-profile/dutch-blitz-game"
 
 
+BACKUP_REFRESH_READS = {
+    "s3:GetAccelerateConfiguration",
+    "s3:GetBucketAcl",
+    "s3:GetBucketCORS",
+    "s3:GetBucketLogging",
+    "s3:GetBucketObjectLockConfiguration",
+    "s3:GetBucketOwnershipControls",
+    "s3:GetBucketPolicy",
+    "s3:GetBucketRequestPayment",
+    "s3:GetBucketWebsite",
+    "s3:GetLifecycleConfiguration",
+    "s3:GetReplicationConfiguration",
+}
+
+
+def test_backup_bucket_refresh_reads_are_scoped_to_that_bucket():
+    policy = _policy()
+    text = POLICY_PATH.read_text(encoding="utf-8")
+    assert "s3:GetObjectLockConfiguration" not in text
+    by_sid = {statement["Sid"]: statement for statement in policy["Statement"]}
+    reads = by_sid["ReadBackupBucketConfiguration"]
+    assert set(reads["Action"]) == BACKUP_REFRESH_READS
+    assert reads["Effect"] == "Allow"
+    assert reads["Resource"] == "arn:aws:s3:::dutch-blitz-scores-replace-me"
+    manage = by_sid["ManageBackupBucketConfiguration"]
+    writes = {
+        action
+        for action in manage["Action"]
+        if action.startswith("s3:Put") or action.startswith("s3:Delete") or action == "s3:CreateBucket"
+    }
+    assert writes == {
+        "s3:CreateBucket",
+        "s3:PutBucketTagging",
+        "s3:PutBucketVersioning",
+        "s3:PutEncryptionConfiguration",
+        "s3:PutBucketPublicAccessBlock",
+    }
+    actions = _actions(policy)
+    assert "s3:DeleteBucket" not in actions
+    assert "s3:PutBucketPolicy" not in actions
+    assert "s3:DeleteObject" not in reads["Action"]
+    assert "s3:GetObject" not in reads["Action"]
+
+
+def test_instance_tags_the_volume_without_replacing_it():
+    night = (REPO / "terraform" / "main.tf").read_text(encoding="utf-8")
+    assert "volume_tags = {" in night
+    assert re.search(r"user_data\s+=\s+local\.extra_ssh_user_data", night)
+    assert "user_data_replace_on_change = false" in night
+    assert "ssh_authorized_keys" in night
+    assert "extra_ssh_user_data" in night
+    start = night.index("root_block_device {")
+    block = night[start : night.index("\n  }", start)]
+    assert "tags" not in block
+    variables = (REPO / "terraform" / "variables.tf").read_text(encoding="utf-8")
+    assert 'variable "extra_ssh_public_keys"' in variables
+    assert "ssh-ed25519" in variables
+    assert "ssh-rsa" in variables
+    for root in ("terraform/backup/variables.tf", "terraform/game-role/variables.tf"):
+        assert 'variable "extra_ssh_public_keys"' in (REPO / root).read_text(encoding="utf-8")
+    example = (REPO / "terraform" / "terraform.tfvars.example").read_text(encoding="utf-8")
+    assert "extra_ssh_public_keys = []" in example
+
+
 def test_state_delete_is_only_the_lock_object():
     policy = _policy()
     by_sid = {statement["Sid"]: statement for statement in policy["Statement"]}

@@ -53,6 +53,15 @@ locals {
   public_hostname     = local.dns_fqdn != "" ? local.dns_fqdn : local.manual_domain
   reserved_dns_labels = ["clerk", "accounts", "clkmail"]
   manage_dns          = var.enable_aws && local.dns_zone != ""
+  # Rendered only when extra_ssh_public_keys is non-empty, so an instance
+  # launched without it does not get a user_data change. ssh_authorized_keys
+  # is applied to the image default user. On Amazon Linux 2023 that user is
+  # ec2-user. The key pair named by key_name is still installed.
+  extra_ssh_user_data = length(var.extra_ssh_public_keys) == 0 ? null : join("\n", concat(
+    ["#cloud-config", "ssh_authorized_keys:"],
+    [for key in var.extra_ssh_public_keys : "  - ${jsonencode(key)}"],
+    [""],
+  ))
 }
 
 resource "null_resource" "local_ready" {
@@ -209,12 +218,29 @@ resource "aws_instance" "game" {
   vpc_security_group_ids      = [aws_security_group.game[0].id]
   iam_instance_profile        = data.aws_iam_instance_profile.game[0].name
   associate_public_ip_address = true
+  user_data                   = local.extra_ssh_user_data
+  # false is the provider default. Set it so a later key edit cannot
+  # destroy the instance. Changing user_data on a running instance is a
+  # stop/start only when the list is non-empty; an empty list leaves
+  # user_data null and does not touch an existing night.
+  user_data_replace_on_change = false
 
   root_block_device {
     volume_size           = var.root_volume_gb
     volume_type           = "gp3"
     encrypted             = true
     delete_on_termination = true
+  }
+
+  # Not ForceNew. On an instance that is already up, the next plan tags
+  # the root volume in place (ec2:CreateTags) and does not replace the
+  # instance. RunInstances sends these as the volume TagSpecification,
+  # which is what the bot policy's aws:RequestTag/Project condition
+  # checks. Do not also set root_block_device.tags: the provider rejects
+  # that combination with volume_tags.
+  volume_tags = {
+    Name    = "${var.name_prefix}-game"
+    Project = "dutch-blitz"
   }
 
   tags = {

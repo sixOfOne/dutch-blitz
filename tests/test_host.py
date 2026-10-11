@@ -1,11 +1,15 @@
 """Controller logic for a game-night host. No Terraform and no AWS calls."""
 
+import json
 import socket
 import sqlite3
 import struct
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
+
+import dutch_blitz_host.cli as host_cli
 
 from dutch_blitz_host.backup import (
     BACKUP_PREFIX,
@@ -23,6 +27,7 @@ from dutch_blitz_host.cli import (
     parse_tfvars,
     render_aws_inventory,
     require_backend_config,
+    resolve_ssh_key,
     ssh_probe_argv,
     terraform_init_argv,
     terraform_local_init_argv,
@@ -37,9 +42,14 @@ from dutch_blitz_host.envfile import (
 )
 from dutch_blitz_host import host_backup
 from dutch_blitz_host.dns import (
+    a_records_from_doh,
+    a_records_from_route53,
     a_records_match,
+    answers_unusable,
     decode_records,
     encode_name,
+    resolve_dns_mode,
+    route53_a_records,
     wait_for_a_record,
 )
 from dutch_blitz_host.hostname import dns_fqdn, hostname_for, https_origin
@@ -415,6 +425,293 @@ class _ScriptedDns:
         if name == "ns1.example.net":
             return ["192.0.2.53"]
         return self._answers.pop(0)
+
+
+def test_benchmark_and_empty_answers_are_unusable():
+    assert answers_unusable([])
+    assert answers_unusable(None)
+    assert answers_unusable(["198.18.0.1"])
+    assert answers_unusable(["198.18.0.0"])
+    assert answers_unusable(["198.19.255.255"])
+    assert not answers_unusable(["198.17.255.255"])
+    assert not answers_unusable(["198.20.0.1"])
+    assert not answers_unusable(["198.51.100.8"])
+    assert not answers_unusable(["203.0.113.10"])
+
+
+def test_classic_mismatch_does_not_use_doh():
+    clock = _FakeClock()
+
+    def fetch(_url, _timeout):
+        raise AssertionError("port 53 returned a real address")
+
+    client = _ScriptedDns([["198.51.100.8"]])
+    assert not wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=0,
+        interval=5,
+        client=client,
+        sleep=clock.sleep,
+        clock=clock,
+        doh_fetch=fetch,
+        route53_lookup=lambda *_args: None,
+    )
+    assert clock.now == 0
+
+
+def test_intercepted_port_53_uses_doh_and_route53():
+    clock = _FakeClock()
+    client = _ScriptedDns([["198.18.0.1"], ["198.18.0.1"], ["198.18.0.1"]])
+    looked_up = []
+
+    def fetch(url, _timeout):
+        assert url.startswith("https://dns.google/resolve?")
+        return {"Status": 0, "Answer": [{"type": 1, "data": "203.0.113.10"}]}
+
+    def route53(hostname, zone):
+        looked_up.append((hostname, zone))
+        return ["203.0.113.10"]
+
+    assert wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=30,
+        interval=5,
+        client=client,
+        sleep=clock.sleep,
+        clock=clock,
+        doh_fetch=fetch,
+        route53_lookup=route53,
+    )
+    assert clock.now == 0
+    assert looked_up == [("blitz.sixofonedev.com", "sixofonedev.com")]
+
+
+def test_empty_classic_answer_uses_doh():
+    clock = _FakeClock()
+    client = _ScriptedDns([[], [], []])
+
+    def fetch(url, _timeout):
+        assert "dns.google" in url
+        return {"Status": 0, "Answer": [{"type": 1, "data": "203.0.113.10"}]}
+
+    assert wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=30,
+        interval=5,
+        client=client,
+        sleep=clock.sleep,
+        clock=clock,
+        doh_fetch=fetch,
+        route53_lookup=lambda *_args: None,
+    )
+    assert clock.now == 0
+
+
+def test_doh_mode_skips_port_53_and_falls_back_to_cloudflare(monkeypatch):
+    monkeypatch.setenv("DUTCH_BLITZ_DNS_MODE", "doh")
+    calls = []
+
+    class _Boom:
+        def ns_records(self, *_args, **_kwargs):
+            raise AssertionError("classic lookup")
+
+        def a_records(self, *_args, **_kwargs):
+            raise AssertionError("classic lookup")
+
+    def fetch(url, _timeout):
+        calls.append(url)
+        if "dns.google" in url:
+            raise OSError("dns.google unreachable")
+        assert url.startswith("https://cloudflare-dns.com/dns-query?")
+        return {"Status": 0, "Answer": [{"type": 1, "data": "203.0.113.10"}]}
+
+    assert wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=10,
+        interval=5,
+        client=_Boom(),
+        mode=None,
+        doh_fetch=fetch,
+        route53_lookup=lambda *_args: ["203.0.113.10"],
+    )
+    assert any("dns.google" in url for url in calls)
+    assert any("cloudflare-dns.com" in url for url in calls)
+
+
+def test_doh_keeps_a_real_google_answer_and_route53_can_block_it():
+    def google_only(url, _timeout):
+        assert "dns.google" in url
+        return {"Status": 0, "Answer": [{"type": 1, "data": "198.51.100.8"}]}
+
+    assert not wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=0,
+        interval=5,
+        mode="doh",
+        doh_fetch=google_only,
+        route53_lookup=lambda *_args: ["203.0.113.10"],
+    )
+
+    def both(url, _timeout):
+        if "dns.google" in url:
+            return {"Status": 0, "Answer": [{"type": 1, "data": "198.18.0.1"}]}
+        return {"Status": 0, "Answer": [{"type": 1, "data": "203.0.113.10"}]}
+
+    assert not wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=0,
+        interval=5,
+        mode="doh",
+        doh_fetch=both,
+        route53_lookup=lambda *_args: ["198.51.100.8"],
+    )
+    assert wait_for_a_record(
+        "blitz.sixofonedev.com",
+        "203.0.113.10",
+        zone="sixofonedev.com",
+        timeout=0,
+        interval=5,
+        mode="doh",
+        doh_fetch=both,
+        route53_lookup=lambda *_args: None,
+    )
+
+
+def test_doh_json_and_route53_listing():
+    assert a_records_from_doh({"Status": 0, "Answer": [{"type": 1, "data": "203.0.113.10"}, {"type": 5, "data": "other."}]}) == [
+        "203.0.113.10"
+    ]
+    assert a_records_from_doh({"Status": 3}) == []
+    sets = [
+        {"Name": "clerk.sixofonedev.com.", "Type": "CNAME", "ResourceRecords": [{"Value": "accounts.example.com"}]},
+        {"Name": "blitz.sixofonedev.com.", "Type": "A", "ResourceRecords": [{"Value": "203.0.113.10"}]},
+    ]
+    assert a_records_from_route53("blitz.sixofonedev.com", sets) == ["203.0.113.10"]
+    assert a_records_from_route53("missing.sixofonedev.com", sets) == []
+    with pytest.raises(ValueError, match="classic or doh"):
+        resolve_dns_mode("udp")
+
+
+class _AwsResult:
+    def __init__(self, returncode, stdout):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def test_route53_lookup_reads_the_zone_and_stops_when_aws_fails():
+    pages = iter(
+        [
+            {
+                "HostedZones": [
+                    {
+                        "Id": "/hostedzone/ZPRIVATE",
+                        "Name": "sixofonedev.com.",
+                        "Config": {"PrivateZone": True},
+                    },
+                    {
+                        "Id": "/hostedzone/Z123",
+                        "Name": "sixofonedev.com.",
+                        "Config": {"PrivateZone": False},
+                    },
+                ]
+            },
+            {
+                "IsTruncated": True,
+                "NextRecordName": "blitz.sixofonedev.com.",
+                "NextRecordType": "A",
+                "ResourceRecordSets": [
+                    {"Name": "clerk.sixofonedev.com.", "Type": "CNAME", "ResourceRecords": [{"Value": "x"}]},
+                ],
+            },
+            {
+                "IsTruncated": False,
+                "ResourceRecordSets": [
+                    {"Name": "blitz.sixofonedev.com.", "Type": "A", "ResourceRecords": [{"Value": "203.0.113.10"}]},
+                ],
+            },
+        ]
+    )
+    commands = []
+
+    def run(argv, **_kwargs):
+        commands.append(argv)
+        return _AwsResult(0, json.dumps(next(pages)))
+
+    assert route53_a_records("blitz.sixofonedev.com", "sixofonedev.com", run=run) == ["203.0.113.10"]
+    assert commands[0][1:3] == ["route53", "list-hosted-zones-by-name"]
+    assert commands[1][1:3] == ["route53", "list-resource-record-sets"]
+    assert "--hosted-zone-id" in commands[1]
+    assert commands[1][commands[1].index("--hosted-zone-id") + 1] == "Z123"
+    assert "--start-record-name" in commands[2]
+
+    def failed(argv, **_kwargs):
+        return _AwsResult(255, "")
+
+    assert route53_a_records("blitz.sixofonedev.com", "sixofonedev.com", run=failed) is None
+
+
+def test_ssh_key_flag_env_and_pem_agree(monkeypatch):
+    monkeypatch.delenv("DUTCH_BLITZ_SSH_KEY", raising=False)
+    for command in ("up", "configure", "backup", "down", "destroy"):
+        assert build_parser().parse_args([command]).ssh_key is None
+    assert resolve_ssh_key(None) == str(Path.home() / ".ssh" / "neo-atari.pem")
+    monkeypatch.setenv("DUTCH_BLITZ_SSH_KEY", "~/keys/bot.pem")
+    assert resolve_ssh_key(None) == str(Path.home() / "keys" / "bot.pem")
+    assert resolve_ssh_key("/tmp/other.pem") == "/tmp/other.pem"
+    assert build_parser().parse_args(["up", "--ssh-key", "/tmp/flag.pem"]).ssh_key == "/tmp/flag.pem"
+
+
+def test_main_uses_the_same_ssh_key_for_up_configure_backup_and_down(monkeypatch):
+    monkeypatch.setenv("DUTCH_BLITZ_SSH_KEY", "/keys/from-env.pem")
+    seen = {}
+
+    def remember(name):
+        def fake(**kwargs):
+            seen[name] = kwargs["ssh_key"]
+            return 0
+
+        return fake
+
+    monkeypatch.setattr(host_cli, "cmd_up", remember("up"))
+    monkeypatch.setattr(host_cli, "cmd_configure", remember("configure"))
+    monkeypatch.setattr(host_cli, "cmd_backup", remember("backup"))
+    monkeypatch.setattr(host_cli, "cmd_destroy", remember("down"))
+    assert host_cli.main(["up"]) == 0
+    assert host_cli.main(["configure", "--dry-run"]) == 0
+    assert host_cli.main(["backup", "--dry-run"]) == 0
+    assert host_cli.main(["down", "--ssh-key", "/keys/flag.pem", "--dry-run"]) == 0
+    assert seen == {
+        "up": "/keys/from-env.pem",
+        "configure": "/keys/from-env.pem",
+        "backup": "/keys/from-env.pem",
+        "down": "/keys/flag.pem",
+    }
+
+
+def test_bad_dns_mode_stops_configure(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise ValueError("DUTCH_BLITZ_DNS_MODE must be classic or doh, got 'udp'.")
+
+    monkeypatch.setattr(host_cli, "wait_for_a_record", boom)
+    with pytest.raises(SystemExit, match="classic or doh"):
+        host_cli._dns_ready(
+            {"dns_zone_name": "sixofonedev.com", "dns_record_name": "blitz"},
+            hostname="blitz.sixofonedev.com",
+            public_ip="203.0.113.10",
+            dry_run=False,
+        )
 
 
 def test_wait_for_ssh_gives_up_after_the_timeout():
