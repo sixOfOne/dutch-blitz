@@ -1,0 +1,114 @@
+# Dependabot version updates.
+#
+# GitHub reads this file and opens pull requests when a dependency has a
+# newer release. It does not merge them. You review each one the same way
+# as any other pull request: the CI checks in .github/workflows/ci.yml
+# have to pass.
+#
+# This file is the schedule for ordinary version updates. It is separate
+# from Dependabot alerts and Dependabot security updates, which you turn
+# on in the repository settings. Those steps are in docs/repo-security.md.
+# Alerts tell you a dependency has a known vulnerability. Security updates
+# open a pull request for that fix. The entries below also open pull
+# requests when nothing is vulnerable, so versions do not sit still for
+# months.
+#
+# version: 2 is the only syntax Dependabot accepts.
+
+version: 2
+updates:
+  # pip: Python packages in the repository root.
+  #
+  # directory "/" means the root. Dependabot reads every requirements
+  # file there, which in this repo is requirements.txt (the app) and
+  # requirements-dev.txt (the test tools). One entry covers both.
+  # It does not look at the ansible-core pin inside the workflow; that
+  # line is not a requirements file.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      # Once a week, on Monday. daily would open pull requests on
+      # weekdays. monthly is easy to forget.
+      interval: "weekly"
+      day: "monday"
+    # At most five open version-update pull requests for this entry.
+    # Dependabot waits once the cap is reached. Five is GitHub's
+    # default, written here so the cap is visible. Security-update pull
+    # requests do not count toward it, so a vulnerability fix is not
+    # stuck behind a queue of ordinary bumps.
+    open-pull-requests-limit: 5
+    groups:
+      # minor is the middle number (1.2.3 -> 1.3.0). patch is the last
+      # number (1.2.3 -> 1.2.4). Matching updates are bundled into one
+      # pull request. A major bump (1.2.3 -> 2.0.0) stays its own pull
+      # request, because that is the release that can change behavior.
+      minor-and-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # github-actions: the actions named on uses: lines in
+  # .github/workflows/. directory must be "/" for this ecosystem.
+  # Dependabot searches .github/workflows itself.
+  #
+  # The workflow pins each action to a commit SHA and puts the release
+  # tag in a comment, such as "# v7.0.1". Dependabot reads that comment,
+  # finds the newer release, and updates both the SHA and the comment
+  # in the pull request. Without the comment it cannot tell which
+  # release the SHA stands for.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # Same bundle as the pip entry: minor and patch together, majors
+      # left as their own pull requests. A major action release can
+      # rename inputs, so it should be read on its own.
+      minor-and-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # terraform: provider versions in required_providers.
+  #
+  # Dependabot looks at the .tf files in each directory you list. It
+  # does not walk into subdirectories on its own, so each root is
+  # named below. All five declare hashicorp/aws and hashicorp/null.
+  # Listing them on one entry means the open-pull-request cap and the
+  # minor/patch group apply once, across every root, instead of five
+  # separate queues.
+  #
+  # These roots have no .terraform.lock.hcl committed. The version
+  # lines are pessimistic constraints (~> 5.0 allows any 5.x). A new
+  # 5.x provider release does not change that line, so it does not
+  # open a pull request. A release that falls outside the constraint,
+  # such as a 6.0 provider, does. That one is a major update and stays
+  # its own pull request.
+  - package-ecosystem: "terraform"
+    directories:
+      # Game-night instance and the blitz DNS record. down destroys this.
+      - "/terraform"
+      # S3 bucket the scores are copied to. Kept across nights.
+      - "/terraform/backup"
+      # S3 bucket that stores Terraform state.
+      - "/terraform/state"
+      # IAM user for the Linux assistant, and the monthly budget.
+      - "/terraform/iam-bot"
+      # Instance role and instance profile. You apply this; down does not.
+      - "/terraform/game-role"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # Same bundle as the pip entry. A provider major (5.x to 6.x)
+      # stays its own pull request.
+      minor-and-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"

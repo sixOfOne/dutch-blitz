@@ -77,6 +77,12 @@ ansible-playbook ansible/playbook.yml --syntax-check -i ansible/inventory/syntax
 ansible-lint ansible/playbook.yml --offline
 ```
 
+## Repository security
+
+The actions in the CI workflow are pinned to commit SHAs. [`.github/dependabot.yml`](.github/dependabot.yml) opens weekly pull requests for Python requirements, those action pins, and the Terraform providers. How to report a vulnerability privately is in [`SECURITY.md`](SECURITY.md).
+
+Branch protection, Dependabot alerts, secret scanning, and private vulnerability reporting are switches in the GitHub settings. They are not changed by a pull request. The clicks, and what each one protects against, are in [docs/repo-security.md](docs/repo-security.md).
+
 ## Configuration
 
 Copy `.env.example` to `.env` if you want the variables loaded automatically. `python -m app` reads that file without overriding variables you already exported. `.env` and other `.env.*` files are gitignored. `.env.example` stays in the repo. Do not put real keys in the repository.
@@ -309,8 +315,11 @@ terraform/state/   bootstrap bucket for Terraform state (you apply this)
 terraform/iam-bot/ bot user, least-privilege policy, and $10 budget (you apply this)
 docs/remote-state.md  one-time migration from local tfstate
 docs/bot-iam.md    what the bot may do, and what could not be scoped tightly
+docs/repo-security.md  GitHub settings to turn on by hand, and what each one stops
 ansible/           install, Caddy, sshd, backup timer
 .github/workflows/ci.yml  tests and static infrastructure checks
+.github/dependabot.yml  weekly pull requests for dependency updates
+SECURITY.md        how to report a vulnerability in private
 tests/             pytest
 ```
 

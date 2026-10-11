@@ -28,6 +28,19 @@ on:
 permissions:
   contents: read
 
+# Every third-party action below is pinned to a full 40-character commit
+# SHA, with the release tag in a comment on that line (for example
+# `# v7.0.1`). A tag such as `@v7` is a movable pointer. If the action's
+# maintainer retags it, or that account is compromised, the next run of
+# this file executes the new commit with the token above. A SHA names
+# one commit, so a rewritten tag does not change what CI runs. That is
+# the supply-chain control: the code that runs is the code you reviewed.
+# Dependabot reads the version comment and opens a pull request that
+# updates the SHA and the comment together. The schedule is
+# .github/dependabot.yml. The Security tab's action alerts follow
+# version tags, not SHAs, so those alerts do not cover these pins. The
+# weekly update is what moves them.
+
 # Concurrency: one in-progress run per branch.
 #
 # github.head_ref is the source branch name on a pull request, and empty
@@ -53,7 +66,7 @@ jobs:
       # Clone the commit that triggered the run. The default fetch is
       # only that commit, which is all the later steps need.
       - name: Check out the repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Python 3.11 is the interpreter installed on the game-night host
       # (ansible/roles/app) and the version the README asks for.
@@ -62,7 +75,7 @@ jobs:
       # key includes a hash of the two requirements files, so an edit
       # to either file downloads again and an unchanged pair is reused.
       - name: Set up Python 3.11
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
@@ -86,7 +99,7 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The roots require Terraform >= 1.10.0 because the S3 backend
       # uses use_lockfile. 1.16.5 is a current stable release, pinned
@@ -97,7 +110,7 @@ jobs:
       # for later steps and can hide the real exit code. fmt -check and
       # validate should fail the job directly when they are unhappy.
       - name: Set up Terraform 1.16.5
-        uses: hashicorp/setup-terraform@v4
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: "1.16.5"
           terraform_wrapper: false
@@ -117,7 +130,7 @@ jobs:
       # file changed but the providers did not, instead of downloading
       # from scratch.
       - name: Restore Terraform provider cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/terraform-plugin-cache
           key: terraform-plugins-${{ hashFiles('terraform/**/*.tf') }}
@@ -153,7 +166,7 @@ jobs:
       # on 3.11. ansible-core 2.20 and newer require 3.12, which the
       # game-night host does not use.
       - name: Set up Python 3.11 for Ansible
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
