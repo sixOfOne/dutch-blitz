@@ -1,0 +1,14 @@
+[Unit]
+Description=Check every {{ idle_check_minutes }} minutes whether this Dutch Blitz host should shut down
+
+[Timer]
+# First look shortly after boot, then every N minutes from the last run.
+# Persistent is off. If it were on, installing the timer during configure
+# could fire a missed slot immediately. The first check is still soon,
+# because OnBootSec is already in the past by the time Ansible starts this.
+OnBootSec=2min
+OnUnitActiveSec={{ idle_check_minutes }}min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

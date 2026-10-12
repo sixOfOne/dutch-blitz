@@ -27,7 +27,7 @@ The five keys, all in that one bucket:
 | `terraform/iam-bot` | `dutch-blitz/iam-bot/terraform.tfstate` |
 | `terraform/game-role` | `dutch-blitz/game-role/terraform.tfstate` |
 
-The bot user can read and write the game-night and backup keys, and their `.tflock` objects. It cannot read the other three. Those hold the bucket configuration, the budget email, and the instance role's policy document. Apply `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own credentials. `up` applies the backup root and the game-night root. It does not apply the role.
+The bot user can read and write the game-night and backup keys, and their `.tflock` objects. It cannot read the other three. Those hold the bucket configuration, the budget email, and the instance role's policy document. The game-role state also holds the idle-shutdown SNS subscription, which includes `alert_email`. Apply `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own credentials. `up` applies the backup root and the game-night root. It does not apply the role.
 
 ## One-time migration
 
@@ -190,7 +190,9 @@ If `get-role` says the role does not exist, skip the import and run the apply fr
 
 `terraform state mv` between the two keys needs a state pull, a local move, and a state push. The push overwrites the remote object. The `removed` blocks plus import leave S3 as the source of truth. Use that path.
 
-After this, `terraform state list` in `terraform/` does not include the role. `terraform state list` in `terraform/game-role` includes the role, the inline policy, and the profile. Later `down` destroys the instance, the security group, and the A record.
+After this, `terraform state list` in `terraform/` does not include the role. `terraform state list` in `terraform/game-role` includes the role, the inline policy, and the profile. Later `down` destroys the instance, the security group, and the A record. It does not destroy this root.
+
+A later apply of `terraform/game-role` adds the idle SNS topic, its email subscription, and a second inline policy (`<name_prefix>-idle-alerts`, only `sns:Publish` on that topic). Those are new addresses. There is nothing to import. The plan should add them and leave the existing role in place. The state file then contains `alert_email`. The bot still cannot read this key. Confirm the subscription email AWS sends, once.
 
 Leave the `removed` blocks in `terraform/main.tf`. Once the addresses are gone they do nothing. Deleting the blocks while an old state still lists the role makes the next destroy delete the role.
 

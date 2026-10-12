@@ -29,3 +29,16 @@ acme_email         = ""
 # are not managed here.
 dns_zone_name   = "sixofonedev.com"
 dns_record_name = "blitz"
+
+# Idle shutdown. The host checks itself. These defaults warn at 60 minutes
+# idle or 7 hours up, and shut down at 90 minutes idle or 8 hours up.
+# The timer runs every 15 minutes. Replace alerts@example.com before apply.
+# The real address stays in this gitignored file. Apply terraform/game-role
+# and confirm the SNS email once. See the README.
+alert_email              = "alerts@example.com"
+idle_warn_minutes        = 60
+idle_shutdown_minutes    = 90
+uptime_warn_minutes      = 420
+uptime_shutdown_minutes  = 480
+idle_snooze_minutes      = 120
+idle_check_minutes       = 15

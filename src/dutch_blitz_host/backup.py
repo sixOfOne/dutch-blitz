@@ -82,10 +82,17 @@ def latest_backup_name(listing: str) -> str | None:
     return sorted(names)[-1]
 
 
-def destroy_plan(*, skip_backup: bool) -> list[str]:
-    """Steps for tearing down a game night. The backup bucket is not one of them."""
+def destroy_plan(*, skip_backup: bool, instance_gone: bool = False) -> list[str]:
+    """Steps for tearing down a game night. The backup bucket is not one of them.
+
+    ``instance_gone`` means the host already terminated itself. The on-server
+    timer uploaded a snapshot before ``shutdown -h now``, so the SSH backup
+    is skipped. The blitz DNS record and this stack are still destroyed.
+    """
     steps: list[str] = []
-    if not skip_backup:
+    if instance_gone and not skip_backup:
+        steps.append("skip-backup:instance-gone")
+    elif not skip_backup:
         steps.append("backup")
     steps.append(f"terraform-destroy:{NIGHT_STACK}")
     return steps

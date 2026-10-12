@@ -78,6 +78,18 @@ PYTHONPATH=src python3 -m dutch_blitz_host down
 
 `up` applies `terraform/backup` and `terraform/`. It does not apply this root. After the policy JSON changes, apply `terraform/iam-bot` with your own credentials. Until that apply, the bot's backup refresh stays denied.
 
+## Idle shutdown
+
+The on-server timer does not use the bot. The instance role, applied by you from `terraform/game-role`, gets one new statement: `sns:Publish` on `arn:aws:sns:us-east-2:<account>:dutch-blitz-idle` (the name is `<name_prefix>-idle`). No other SNS action. The topic and the email subscription are in that same root so `down` does not delete them.
+
+This policy file did not change for that timer. `up` and `down` do not call SNS, so the bot was not granted `sns:ListTopics`, `sns:GetTopicAttributes`, `sns:Publish`, or `sns:Subscribe`. The host builds the topic ARN from the name, the region, and the account id in instance metadata. It does not need the bot to look the topic up.
+
+`down` after a self-terminate calls `ec2:DescribeInstances`, which is already covered by `ec2:Describe*`. `TerminateInstances` on an id that is already gone is the same destroy path as a normal `down`. No new EC2 action was added.
+
+`instance_initiated_shutdown_behavior = "terminate"` is a parameter of `RunInstances`. A new night gets it at launch. Changing it on an instance that is already running would be `ec2:ModifyInstanceAttribute`, which is still not granted. `down` that night with your own credentials, then `up`.
+
+Do not re-apply `terraform/iam-bot` only because the idle timer landed. Re-apply it when this JSON changes.
+
 ## What is not scoped as tightly as the name suggests
 
 These are the permissions I would not call precise, and why they are shaped this way.

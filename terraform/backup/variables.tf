@@ -95,3 +95,90 @@ variable "dns_record_name" {
   type        = string
   default     = "blitz"
 }
+
+# Declared so the shared terraform.tfvars file applies. This stack does
+# not create the topic and does not read the thresholds. The game-night
+# CLI copies the numbers into Ansible. terraform/game-role owns the topic.
+variable "alert_email" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack. terraform/game-role subscribes this address. Do not commit the real address."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition = (
+      var.alert_email == "" ||
+      (
+        can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.alert_email)) &&
+        !endswith(lower(var.alert_email), "@example.com")
+      )
+    )
+    error_message = "alert_email must be empty or one real address. Do not commit it. alerts@example.com is a placeholder."
+  }
+}
+
+variable "idle_warn_minutes" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  type        = number
+  default     = 60
+
+  validation {
+    condition     = var.idle_warn_minutes >= 1 && var.idle_warn_minutes < var.idle_shutdown_minutes
+    error_message = "idle_warn_minutes must be at least 1 and less than idle_shutdown_minutes."
+  }
+}
+
+variable "idle_shutdown_minutes" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.idle_shutdown_minutes >= 2
+    error_message = "idle_shutdown_minutes must be at least 2."
+  }
+}
+
+variable "uptime_warn_minutes" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  type        = number
+  default     = 420
+
+  validation {
+    condition     = var.uptime_warn_minutes >= 1 && var.uptime_warn_minutes < var.uptime_shutdown_minutes
+    error_message = "uptime_warn_minutes must be at least 1 and less than uptime_shutdown_minutes."
+  }
+}
+
+variable "uptime_shutdown_minutes" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  type        = number
+  default     = 480
+
+  validation {
+    condition     = var.uptime_shutdown_minutes >= 2
+    error_message = "uptime_shutdown_minutes must be at least 2."
+  }
+}
+
+variable "idle_snooze_minutes" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  type        = number
+  default     = 120
+
+  validation {
+    condition     = var.idle_snooze_minutes >= 1 && var.idle_snooze_minutes <= 1440
+    error_message = "idle_snooze_minutes must be from 1 to 1440."
+  }
+}
+
+variable "idle_check_minutes" {
+  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  type        = number
+  default     = 15
+
+  validation {
+    condition     = var.idle_check_minutes >= 1 && var.idle_check_minutes <= 60
+    error_message = "idle_check_minutes must be from 1 to 60."
+  }
+}

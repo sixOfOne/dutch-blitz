@@ -7,12 +7,17 @@
     app_root: /opt/dutch-blitz
     db_dir: /var/lib/dutch-blitz
     db_path: /var/lib/dutch-blitz/dutch_blitz.sqlite
+    # Written by the app on every request. The idle timer reads it.
+    # It is not uploaded to S3. A new instance starts idle.
+    activity_path: /var/lib/dutch-blitz/last-activity
+    idle_access_log: /var/log/caddy/access.log
     backup_prefix: dutch-blitz
   roles:
     - role: sshd
     - role: app
     - role: caddy
     - role: backup
+    - role: idle
   tasks:
     - name: Reload systemd units
       ansible.builtin.systemd:
@@ -69,6 +74,13 @@
     - name: Start the backup timer
       ansible.builtin.systemd:
         name: dutch-blitz-backup.timer
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+    - name: Start the idle shutdown timer
+      ansible.builtin.systemd:
+        name: dutch-blitz-idle.timer
         state: restarted
         enabled: true
         daemon_reload: true

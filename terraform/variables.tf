@@ -91,3 +91,92 @@ variable "acme_email" {
   type        = string
   default     = ""
 }
+
+# Idle shutdown. The host's Ansible timer reads these from terraform.tfvars.
+# This stack does not create the SNS topic. terraform/game-role does, so
+# the subscription confirmation survives `down`. Defaults: warn at 60
+# minutes idle or 7 hours up, shut down at 90 minutes idle or 8 hours up.
+# The timer itself is every 15 minutes, so a limit can be that late.
+variable "alert_email" {
+  description = "Address that receives idle-shutdown mail. Set it only in gitignored terraform.tfvars. terraform/game-role subscribes it to the SNS topic. Empty is rejected when enable_aws is true. alerts@example.com is a placeholder and is rejected."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition = (
+      var.alert_email == "" ||
+      (
+        can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.alert_email)) &&
+        !endswith(lower(var.alert_email), "@example.com")
+      )
+    )
+    error_message = "alert_email must be empty or one real address. Do not commit it. alerts@example.com is a placeholder."
+  }
+}
+
+variable "idle_warn_minutes" {
+  description = "Minutes without an HTTP request before the idle warning email. Must be less than idle_shutdown_minutes."
+  type        = number
+  default     = 60
+
+  validation {
+    condition     = var.idle_warn_minutes >= 1 && var.idle_warn_minutes < var.idle_shutdown_minutes
+    error_message = "idle_warn_minutes must be at least 1 and less than idle_shutdown_minutes."
+  }
+}
+
+variable "idle_shutdown_minutes" {
+  description = "Minutes without an HTTP request before the host backs up and shuts down. Default 90."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.idle_shutdown_minutes >= 2
+    error_message = "idle_shutdown_minutes must be at least 2."
+  }
+}
+
+variable "uptime_warn_minutes" {
+  description = "Minutes since boot before the uptime warning, unless a snooze moved the deadline. Must be less than uptime_shutdown_minutes. Default 7 hours."
+  type        = number
+  default     = 420
+
+  validation {
+    condition     = var.uptime_warn_minutes >= 1 && var.uptime_warn_minutes < var.uptime_shutdown_minutes
+    error_message = "uptime_warn_minutes must be at least 1 and less than uptime_shutdown_minutes."
+  }
+}
+
+variable "uptime_shutdown_minutes" {
+  description = "Minutes since boot before shutdown even if the site is in use, plus any snooze added on the host. Default 8 hours."
+  type        = number
+  default     = 480
+
+  validation {
+    condition     = var.uptime_shutdown_minutes >= 2
+    error_message = "uptime_shutdown_minutes must be at least 2."
+  }
+}
+
+variable "idle_snooze_minutes" {
+  description = "Minutes added to the uptime deadline by `sudo /usr/local/bin/dutch-blitz-idle snooze`. Each run adds this many. It does not reset the idle clock."
+  type        = number
+  default     = 120
+
+  validation {
+    condition     = var.idle_snooze_minutes >= 1 && var.idle_snooze_minutes <= 1440
+    error_message = "idle_snooze_minutes must be from 1 to 1440."
+  }
+}
+
+variable "idle_check_minutes" {
+  description = "How often the on-server timer looks at idle and uptime. Default 15. A limit can be this late."
+  type        = number
+  default     = 15
+
+  validation {
+    condition     = var.idle_check_minutes >= 1 && var.idle_check_minutes <= 60
+    error_message = "idle_check_minutes must be from 1 to 60."
+  }
+}

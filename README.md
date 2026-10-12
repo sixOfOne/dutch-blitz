@@ -172,6 +172,53 @@ PYTHONPATH=src python3 -m dutch_blitz_host down
 
 `down` uploads a final consistent snapshot (Python's `sqlite3` backup API), then destroys the instance. The S3 bucket is a separate Terraform state with `prevent_destroy`, so this command leaves it in place. A timer on the host also uploads about every 15 minutes. `PYTHONPATH=src python3 -m dutch_blitz_host backup` uploads once without tearing the host down.
 
+If the instance already shut itself down, `down` does not try SSH. It still deletes the blitz A record and the Terraform state. `--skip-backup` remains the manual escape when SSH fails and describe cannot tell whether the instance is gone. Scores saved after the last upload are not copied in that case.
+
+### If the server is left up
+
+A timer on the instance checks about every 15 minutes. It does not need your laptop or the assistant to be online.
+
+Idle means no HTTP request to the scorekeeper for `idle_shutdown_minutes` (default 90). Caddy's access log and a stamp the app writes on each request both count. The newer one wins. Let's Encrypt challenge requests do not count. Opening the site, including a refresh, resets this clock.
+
+Uptime is how long this boot has lasted. At `uptime_shutdown_minutes` (default 8 hours, 480 minutes) the host shuts down even if people are still scoring.
+
+The warning email goes out once when idle reaches `idle_warn_minutes` (default 60) or uptime reaches `uptime_warn_minutes` (default 7 hours, 420). It says how long the host has been up, how long it has been idle, when it will shut down, and how to keep it running. After a snooze, the uptime warning can send once more. Using the site re-arms the idle warning.
+
+Mail is an SNS topic named `<name_prefix>-idle` (default `dutch-blitz-idle`) in `terraform/game-role`. The subscription is `alert_email` from the gitignored tfvars. Confirm AWS's email once. `down` does not delete the topic, so that confirmation lasts across nights.
+
+To keep a long game going, SSH to the instance and run:
+
+```bash
+sudo /usr/local/bin/dutch-blitz-idle snooze
+```
+
+That adds `idle_snooze_minutes` (default 2 hours) to the uptime deadline. Run it again if you need more. It does not reset the idle clock. There is no web address that snoozes or shuts the server down. The app cannot write the snooze file. That file is root-owned.
+
+When a limit is reached the host runs the same backup command the 15-minute backup timer uses. If the upload fails, the host stays up and emails the failure once. If the upload succeeds, it emails that it is shutting down and runs `shutdown -h now`.
+
+The instance is launched with `instance_initiated_shutdown_behavior = "terminate"`, so that power-off deletes the instance and the root volume. Compute and disk billing stop. A stop would leave the instance in Terraform state. The next `up` would see it and would not boot a fresh one, and stop releases the public IP, so the blitz name would point nowhere. The instance role is not allowed to call `ec2:TerminateInstances` or `ec2:StopInstances`.
+
+After a self-terminate, the blitz A record and the game-night Terraform state still describe the dead instance. Phones will fail to connect. Run `down` when you see the shutdown email. It removes the DNS record and the state. The next `up` creates a new instance. Until one of those, the name is stale.
+
+The check can be up to `idle_check_minutes` late (default 15). Change the numbers in `terraform/terraform.tfvars`, then run `configure` on a host that is already up, or let the next `up` install them. `up` does not apply `terraform/game-role`.
+
+A night that is already running when this is first applied does not yet have the timer, and it does not yet terminate on shutdown. `down` it, apply `terraform/game-role`, confirm the email, then `up`. The bot cannot change shutdown behavior on a running instance (`ec2:ModifyInstanceAttribute` is not in its policy). The next launch sends the setting with `RunInstances`.
+
+Owner steps after this change is merged, with your own credentials:
+
+1. In gitignored `terraform/terraform.tfvars`, set `alert_email` to your address. `alerts@example.com` is rejected. The optional minute settings are in `terraform/terraform.tfvars.example`. Do not commit the address.
+2. Apply only `terraform/game-role`. That creates the topic, the email subscription, and an instance-role policy that is `sns:Publish` on that topic:
+
+```bash
+terraform -chdir=terraform/game-role init -backend-config=../backend.hcl
+terraform -chdir=terraform/game-role apply -var-file=../terraform.tfvars
+```
+
+3. Open the AWS confirmation message and confirm the subscription. Until you do, publishes succeed and no mail arrives.
+4. Do not re-apply `terraform/iam-bot` for this change. The bot policy is unchanged. `up` and `down` do not call SNS. `down` uses `ec2:DescribeInstances`, which the bot already has. Details are in [docs/bot-iam.md](docs/bot-iam.md).
+
+`configure` installs the timer. The topic name on the host is `<name_prefix>-idle`. The host builds the ARN from that name, the region, and the account id in the instance metadata. The account id is not in git.
+
 State for every root is an object in one S3 bucket, shared by the Mac and the Linux assistant. The bucket name is not in git. Copy `terraform/backend.hcl.example` to `terraform/backend.hcl` and follow [docs/remote-state.md](docs/remote-state.md) once. Bootstrap `terraform/state` with a gitignored `terraform/state/bootstrap_override.tf` that contains `backend "local" {}`, init, and apply. `init -backend=false` and then apply stops with `Backend initialization required`, because the s3 backend block is still there and was not initialized. Delete the override, then `terraform init -migrate-state -backend-config=backend.hcl` for each root that already has a local `terraform.tfstate`. Compare `terraform state list` after that init with `terraform show` of the state files copied aside before migration. `terraform state list` fails until init has run. `up` and `down` pass that backend file into `terraform init`. CI keeps using `init -backend=false` and `validate`, and does not contact the bucket.
 
 On AWS, before the first `up`:
@@ -180,7 +227,7 @@ On AWS, before the first `up`:
 - The account needs a default VPC in `us-east-2`.
 - Create an EC2 key pair named `neo-atari` in `us-east-2` if it is not already there. Key pairs are regional. The private key defaults to `~/.ssh/neo-atari.pem`. `up`, `configure`, `backup`, and `down` all take `--ssh-key`. When the flag is omitted they use `DUTCH_BLITZ_SSH_KEY`, and when that is unset they use the pem path above. The assistant's private key stays on that machine, mode `0600`, and is not committed.
 - Pick a bucket name that is free worldwide. Apply `terraform/backup` once so the bucket exists, or let the first `up` create it. Later nights reuse it.
-- Apply `terraform/game-role` yourself, after the bucket exists and before the first `up`. That root is the instance role and instance profile. `up` only looks the profile up by name. `down` does not delete it. The steps, including a night that still has the role in the game-night state, are in [docs/remote-state.md](docs/remote-state.md).
+- Apply `terraform/game-role` yourself, after the bucket exists and before the first `up`. That root is the instance role, the instance profile, and the idle-shutdown SNS topic. `up` only looks the profile up by name. `down` does not delete the role or the topic. Set `alert_email` in the gitignored tfvars and confirm the subscription email once. The steps, including a night that still has the role in the game-night state, are in [docs/remote-state.md](docs/remote-state.md).
 - If the assistant also runs `up` or `down`, add every address that machine might egress from as a `/32` in `ssh_ingress_cidrs`. `ssh_ingress_cidr` stays the first machine. HTTP and HTTPS stay open.
 - Both operators keep the same tfvars values for the shared settings `ssh_ingress_cidrs` and `extra_ssh_public_keys`. State is shared. A different list on one machine makes that machine's apply rewrite the security group or the instance user data of the night the other machine is running.
 
@@ -301,15 +348,15 @@ app/store.py       SQLite, owners, invite links, and claimed seats
 app/views.py       totals and the words on the page
 app/templates/     server-rendered HTML
 app/static/        CSS, score form, and Clerk cookie refresh
-src/dutch_blitz_host/  game-night CLI (apply, configure, backup, destroy)
+src/dutch_blitz_host/  game-night CLI (apply, configure, backup, destroy, idle shutdown)
 terraform/         EC2 host and blitz A record, destroyed by down; looks up the instance profile
 terraform/backup/  S3 snapshot bucket, kept across nights
-terraform/game-role/ instance role and profile (you apply this; down does not)
+terraform/game-role/ instance role, instance profile, and idle SNS topic (you apply this; down does not)
 terraform/state/   bootstrap bucket for Terraform state (you apply this)
 terraform/iam-bot/ bot user, least-privilege policy, and $10 budget (you apply this)
 docs/remote-state.md  one-time migration from local tfstate
 docs/bot-iam.md    what the bot may do, and what could not be scoped tightly
-ansible/           install, Caddy, sshd, backup timer
+ansible/           install, Caddy, sshd, backup timer, idle shutdown timer
 .github/workflows/ci.yml  tests and static infrastructure checks
 tests/             pytest
 ```

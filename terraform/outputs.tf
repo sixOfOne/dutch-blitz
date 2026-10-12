@@ -44,5 +44,10 @@ output "backup_bucket" {
 
 output "backup_note" {
   description = "Reminds operators that destroying this stack keeps the backup bucket."
-  value       = "terraform destroy in this directory deletes the instance only. The backup bucket is terraform/backup. The instance role is terraform/game-role."
+  value       = "terraform destroy in this directory deletes the instance only. The backup bucket is terraform/backup. The instance role and the idle SNS topic are terraform/game-role."
+}
+
+output "idle_shutdown_note" {
+  description = "What a self-terminate leaves behind."
+  value       = "The host shuts itself down when it is idle or past the uptime limit, after a successful S3 backup. Confirm the SNS email from terraform/game-role once. After a self-terminate, run down to remove the blitz DNS record. State stays stale until down or the next up."
 }
