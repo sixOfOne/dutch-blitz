@@ -5,5 +5,14 @@
 {% endif %}
 {{ app_hostname }} {
 	encode gzip
+	# One JSON line per request. The idle timer reads the newest timestamp.
+	# This file is not rotated: a new empty file would look like "no
+	# requests yet" and could shut a busy host down. A game night is a
+	# small log. Let's Encrypt lines are ignored by the timer. The app
+	# also writes {{ activity_path }}, and the newer of the two wins.
+	log {
+		output file {{ idle_access_log }}
+		format json
+	}
 	reverse_proxy 127.0.0.1:8000
 }

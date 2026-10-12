@@ -124,6 +124,17 @@ resource "null_resource" "game_night_checks" {
       condition     = local.dns_fqdn == "" || local.manual_domain == "" || lower(local.manual_domain) == local.dns_fqdn
       error_message = "When dns_zone_name is set, leave domain empty or set it to the same hostname."
     }
+
+    precondition {
+      condition = (
+        !var.enable_aws ||
+        (
+          can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.alert_email)) &&
+          !endswith(lower(var.alert_email), "@example.com")
+        )
+      )
+      error_message = "Set alert_email in terraform.tfvars to a real address. Apply terraform/game-role and confirm the SNS subscription before the first night. The instance cannot send idle mail without that topic. alerts@example.com is a placeholder."
+    }
   }
 }
 
@@ -224,6 +235,25 @@ resource "aws_instance" "game" {
   # stop/start only when the list is non-empty; an empty list leaves
   # user_data null and does not touch an existing night.
   user_data_replace_on_change = false
+  # terminate, not stop. `shutdown -h now` on the host powers the OS off.
+  # EC2 then deletes the instance, and delete_on_termination deletes the
+  # root volume, so compute and disk billing both stop. Stop would leave
+  # the instance in state. The next `up` is a terraform apply, which would
+  # see that stopped instance and would not boot a new one, and stop
+  # releases the public IP so the blitz record would point nowhere.
+  #
+  # The instance role is not granted ec2:StopInstances or
+  # ec2:TerminateInstances. It cannot turn some other instance off. This
+  # attribute is a RunInstances parameter, so a new night gets it at
+  # launch. Changing it on an instance that is already running is
+  # ModifyInstanceAttribute, which the bot is not allowed to call. down
+  # that night with your own credentials, then up.
+  #
+  # After a self-terminate, Terraform state and the blitz A record still
+  # describe the dead instance until the next down or up. down skips the
+  # SSH backup when the instance is already gone and still deletes the
+  # record. up creates a new instance.
+  instance_initiated_shutdown_behavior = "terminate"
 
   root_block_device {
     volume_size           = var.root_volume_gb

@@ -1,0 +1,17 @@
+---
+# Defaults match terraform/variables.tf. Inventory host vars from
+# configure override the ones whose names match terraform.tfvars.
+# uptime_* and aws_region cannot be the default names here: ansible-lint
+# wants role defaults to start with the role name. The templates fall
+# back to the idle_* names when the inventory does not set them.
+idle_warn_minutes: 60
+idle_shutdown_minutes: 90
+idle_uptime_warn_minutes: 420
+idle_uptime_shutdown_minutes: 480
+idle_snooze_minutes: 120
+idle_check_minutes: 15
+idle_topic_name: dutch-blitz-idle
+idle_aws_region: us-east-2
+idle_activity_path: /var/lib/dutch-blitz/last-activity
+idle_access_log: /var/log/caddy/access.log
+idle_state_dir: /var/lib/dutch-blitz-idle

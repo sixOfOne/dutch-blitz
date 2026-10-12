@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.activity import note_activity
 from app.auth import SESSION_COOKIE, AuthError, DevBypassVerifier, verifier_from_env
 from app.config import clerk_browser_config
 from app.config import db_path as configured_db_path
@@ -69,6 +70,11 @@ def create_app(db_path: str | None = None, verifier=None) -> FastAPI:
 
     @app.middleware("http")
     async def require_user(request: Request, call_next):
+        # Any request, including a signed-out visit or a static file, means
+        # someone has the site open. The idle timer reads the stamp. This
+        # does not snooze the uptime limit and it is not a shutdown switch.
+        store = getattr(request.app.state, "store", None)
+        note_activity(getattr(store, "db_path", None) if store is not None else None)
         if request.url.path.startswith("/static"):
             return await call_next(request)
         verifier_impl = getattr(request.app.state, "verifier", None)

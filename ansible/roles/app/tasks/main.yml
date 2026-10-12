@@ -117,6 +117,7 @@
     mode: "0600"
     content: |
       DUTCH_BLITZ_DB_PATH={{ db_path }}
+      DUTCH_BLITZ_ACTIVITY_PATH={{ activity_path }}
       DUTCH_BLITZ_HOST=127.0.0.1
       DUTCH_BLITZ_PORT=8000
       CLERK_PUBLISHABLE_KEY={{ lookup('env', 'CLERK_PUBLISHABLE_KEY') }}

@@ -9,7 +9,10 @@
 # The role now outlives the instance. `up` only looks the profile up
 # and passes this role to EC2. The bot policy has iam:PassRole on this
 # role and iam:GetInstanceProfile on this profile, and no other iam
-# action. `down` does not run in this directory.
+# action. `down` does not run in this directory, so the role stays, and
+# so does the idle-shutdown SNS topic created below. The email
+# confirmation survives the next night. The instance role may
+# sns:Publish to that one topic and to nothing else.
 #
 # Why a separate root, and not terraform/backup: `up` applies the backup
 # root every night, with the bot's credentials. Putting the role there
@@ -77,6 +80,17 @@ resource "null_resource" "role_checks" {
       )
       error_message = "enable_aws requires name_prefix and a lowercase backup_bucket_name. The bucket must already exist; this stack only reads it."
     }
+
+    precondition {
+      condition = (
+        !var.enable_aws ||
+        (
+          can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.alert_email)) &&
+          !endswith(lower(var.alert_email), "@example.com")
+        )
+      )
+      error_message = "Set alert_email in terraform.tfvars to a real address before applying this root. Confirm the SNS subscription email once. alerts@example.com is a placeholder. Do not commit the address."
+    }
   }
 }
 
@@ -138,4 +152,93 @@ resource "aws_iam_instance_profile" "game" {
   count = var.enable_aws ? 1 : 0
   name  = "${var.name_prefix}-game"
   role  = aws_iam_role.game[0].name
+}
+
+# The topic outlives the instance. `down` destroys terraform/, not this
+# root, so the subscription confirmation is still in place the next night.
+# Email delivery starts only after the owner clicks the link AWS sends.
+resource "aws_sns_topic" "idle" {
+  count = var.enable_aws ? 1 : 0
+  name  = "${var.name_prefix}-idle"
+
+  tags = {
+    Name    = "${var.name_prefix}-idle"
+    Project = "dutch-blitz"
+  }
+}
+
+# Account root on the topic lets your admin user manage the subscription.
+# It does not let the bot subscribe: the bot's identity policy has no
+# sns action at all. The instance role is named so Publish works even
+# when the default topic policy's SourceOwner condition does not match
+# an instance-role call. The role's own policy, below, is still only
+# sns:Publish on this ARN. The instance cannot add a second subscriber.
+data "aws_caller_identity" "current" {
+  count = var.enable_aws ? 1 : 0
+}
+
+data "aws_iam_policy_document" "idle_topic" {
+  count = var.enable_aws ? 1 : 0
+
+  statement {
+    sid = "AllowAccountToManageIdleTopic"
+    actions = [
+      "sns:GetTopicAttributes",
+      "sns:SetTopicAttributes",
+      "sns:DeleteTopic",
+      "sns:Subscribe",
+      "sns:Unsubscribe",
+      "sns:GetSubscriptionAttributes",
+      "sns:ListSubscriptionsByTopic",
+      "sns:TagResource",
+      "sns:UntagResource",
+      "sns:ListTagsForResource",
+      "sns:Publish",
+    ]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current[0].account_id}:root"]
+    }
+    resources = [aws_sns_topic.idle[0].arn]
+  }
+
+  statement {
+    sid     = "AllowGameRolePublish"
+    actions = ["sns:Publish"]
+    principals {
+      type        = "AWS"
+      identifiers = [aws_iam_role.game[0].arn]
+    }
+    resources = [aws_sns_topic.idle[0].arn]
+  }
+}
+
+resource "aws_sns_topic_policy" "idle" {
+  count  = var.enable_aws ? 1 : 0
+  arn    = aws_sns_topic.idle[0].arn
+  policy = data.aws_iam_policy_document.idle_topic[0].json
+}
+
+resource "aws_sns_topic_subscription" "idle_email" {
+  count     = var.enable_aws ? 1 : 0
+  topic_arn = aws_sns_topic.idle[0].arn
+  protocol  = "email"
+  endpoint  = var.alert_email
+}
+
+data "aws_iam_policy_document" "publish_idle_topic" {
+  count = var.enable_aws ? 1 : 0
+
+  statement {
+    sid       = "PublishIdleAlerts"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.idle[0].arn]
+  }
+}
+
+resource "aws_iam_role_policy" "publish_idle_topic" {
+  count  = var.enable_aws ? 1 : 0
+  name   = "${var.name_prefix}-idle-alerts"
+  role   = aws_iam_role.game[0].id
+  policy = data.aws_iam_policy_document.publish_idle_topic[0].json
 }

@@ -53,6 +53,11 @@ from dutch_blitz_host.dns import (
     wait_for_a_record,
 )
 from dutch_blitz_host.hostname import dns_fqdn, hostname_for, https_origin
+from dutch_blitz_host.instance_status import (
+    describe_instances_argv,
+    parse_describe_instances,
+    should_skip_ssh_backup,
+)
 
 
 def test_hostname_uses_sslip_for_an_ipv4():
@@ -143,6 +148,10 @@ def test_destroy_plan_backs_up_before_the_night_stack():
     steps = destroy_plan(skip_backup=False)
     assert steps == ["backup", "terraform-destroy:terraform"]
     assert destroy_plan(skip_backup=True) == ["terraform-destroy:terraform"]
+    assert destroy_plan(skip_backup=False, instance_gone=True) == [
+        "skip-backup:instance-gone",
+        "terraform-destroy:terraform",
+    ]
     assert all("terraform/backup" not in step for step in steps)
 
 
@@ -726,3 +735,116 @@ def test_wait_for_ssh_gives_up_after_the_timeout():
                             run=run, sleep=clock.sleep, clock=clock)
     assert clock.now <= 20
     assert len(calls) == 5
+
+
+def test_describe_instances_treats_not_found_as_gone_and_errors_as_unknown():
+    argv = describe_instances_argv("i-0123456789abcdef0", "us-east-2")
+    assert argv[:3] == ["aws", "ec2", "describe-instances"]
+    assert "--instance-ids" in argv
+    state, failed = parse_describe_instances('["terminated"]\n', "", 0)
+    assert (state, failed) == ("terminated", False)
+    assert should_skip_ssh_backup(state, describe_failed=failed) is True
+    missing, missing_failed = parse_describe_instances(
+        "",
+        "An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances operation",
+        254,
+    )
+    assert missing is None and missing_failed is False
+    assert should_skip_ssh_backup(missing, describe_failed=missing_failed) is True
+    shutting, _shut_failed = parse_describe_instances('["shutting-down"]\n', "", 0)
+    assert should_skip_ssh_backup(shutting, describe_failed=False) is True
+    running, _run_failed = parse_describe_instances('["running"]\n', "", 0)
+    assert should_skip_ssh_backup(running, describe_failed=False) is False
+    # A stopped disk may still hold scores. Do not skip the backup.
+    stopped, _stopped_failed = parse_describe_instances('["stopped"]\n', "", 0)
+    assert should_skip_ssh_backup(stopped, describe_failed=False) is False
+    _unknown, unknown_failed = parse_describe_instances("", "Unable to locate credentials", 255)
+    assert unknown_failed is True
+    assert should_skip_ssh_backup(None, describe_failed=True) is False
+    assert parse_describe_instances("[]\n", "", 0) == (None, False)
+
+
+def test_down_skips_ssh_backup_when_the_instance_already_terminated(monkeypatch, capsys):
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true", "aws_region": "us-east-2"})
+    monkeypatch.setattr(
+        host_cli,
+        "terraform_outputs",
+        lambda _path: {"instance_id": {"value": "i-0123456789abcdef0"}},
+    )
+    monkeypatch.setattr(host_cli, "describe_instance_state", lambda *_args, **_kwargs: ("terminated", False))
+    called = {"backup": 0, "destroy": 0}
+
+    def backup(**_kwargs):
+        called["backup"] += 1
+        return 0
+
+    def destroy(*_args, **kwargs):
+        called["destroy"] += 1
+        assert kwargs["action"] == "destroy"
+        return 0
+
+    monkeypatch.setattr(host_cli, "cmd_backup", backup)
+    monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    assert host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    assert called == {"backup": 0, "destroy": 1}
+    assert "Skipping the SSH backup" in capsys.readouterr().out
+
+
+def test_down_still_backs_up_when_describe_fails(monkeypatch):
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
+    monkeypatch.setattr(
+        host_cli,
+        "terraform_outputs",
+        lambda _path: {"instance_id": {"value": "i-0123456789abcdef0"}},
+    )
+    monkeypatch.setattr(host_cli, "describe_instance_state", lambda *_args, **_kwargs: (None, True))
+    called = {"backup": 0}
+
+    def backup(**_kwargs):
+        called["backup"] += 1
+        return 0
+
+    monkeypatch.setattr(host_cli, "cmd_backup", backup)
+    monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
+    assert host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    assert called["backup"] == 1
+
+
+def test_down_refuses_to_destroy_when_the_final_backup_fails(monkeypatch):
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
+    monkeypatch.setattr(host_cli, "instance_already_gone", lambda _tfvars: (False, "instance is running"))
+    monkeypatch.setattr(host_cli, "cmd_backup", lambda **_kwargs: 1)
+
+    def destroy(*_args, **_kwargs):
+        raise AssertionError("destroyed")
+
+    monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    assert host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 1
+
+
+def test_inventory_can_carry_idle_limits_without_the_alert_email():
+    inventory = render_aws_inventory(
+        public_ip="203.0.113.10",
+        ssh_key="/home/owner/.ssh/neo-atari.pem",
+        hostname="blitz.example.com",
+        backup_bucket="dutch-blitz-scores-example",
+        acme_email="",
+        extra_vars={
+            "idle_warn_minutes": "45",
+            "idle_topic_name": "dutch-blitz-idle",
+            "aws_region": "us-east-2",
+        },
+    )
+    assert "idle_warn_minutes: 45" in inventory
+    assert "idle_topic_name: dutch-blitz-idle" in inventory
+    assert "alert_email" not in inventory
+    assert "@" not in inventory
+
+
+def test_bot_policy_is_unchanged_for_idle_shutdown():
+    # The instance publishes with its own role. up and down do not call SNS,
+    # so the bot policy stays free of sns: and of ModifyInstanceAttribute.
+    text = (Path(__file__).resolve().parents[1] / "docs" / "grok-bot-dutch-blitz-policy.json").read_text(encoding="utf-8")
+    assert "sns:" not in text
+    assert "ModifyInstanceAttribute" not in text
+    assert "ec2:Describe*" in text
