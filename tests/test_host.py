@@ -4,13 +4,13 @@ import json
 import socket
 import sqlite3
 import struct
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 import dutch_blitz_host.cli as host_cli
-
+from dutch_blitz_host import host_backup
 from dutch_blitz_host.backup import (
     BACKUP_PREFIX,
     backup_object_name,
@@ -33,14 +33,6 @@ from dutch_blitz_host.cli import (
     terraform_local_init_argv,
     wait_for_ssh,
 )
-from dutch_blitz_host.envfile import (
-    ENV_FILE_MODE,
-    assert_deployable,
-    deployment_env,
-    merged_env,
-    redact,
-)
-from dutch_blitz_host import host_backup
 from dutch_blitz_host.dns import (
     a_records_from_doh,
     a_records_from_route53,
@@ -51,6 +43,13 @@ from dutch_blitz_host.dns import (
     resolve_dns_mode,
     route53_a_records,
     wait_for_a_record,
+)
+from dutch_blitz_host.envfile import (
+    ENV_FILE_MODE,
+    assert_deployable,
+    deployment_env,
+    merged_env,
+    redact,
 )
 from dutch_blitz_host.hostname import dns_fqdn, hostname_for, https_origin
 from dutch_blitz_host.instance_status import (
@@ -109,8 +108,8 @@ def test_backup_sqlite_snapshot_stays_behind_later_writes(tmp_path):
 
 
 def test_backup_object_names_sort_by_time():
-    earlier = backup_object_name(datetime(2026, 10, 10, 1, 2, 3, tzinfo=timezone.utc))
-    later = backup_object_name(datetime(2026, 10, 10, 4, 5, 6, tzinfo=timezone.utc))
+    earlier = backup_object_name(datetime(2026, 10, 10, 1, 2, 3, tzinfo=UTC))
+    later = backup_object_name(datetime(2026, 10, 10, 4, 5, 6, tzinfo=UTC))
     assert earlier == "20261010T010203Z.sqlite"
     assert later == "20261010T040506Z.sqlite"
     assert earlier < later
@@ -220,7 +219,7 @@ def test_tfvars_and_inventory_do_not_carry_secrets():
     assert parsed["backup_bucket_name"] == "dutch-blitz-scores-example"
     inventory = render_aws_inventory(
         public_ip="203.0.113.10",
-        ssh_key="/home/owner/.ssh/neo-atari.pem",
+        ssh_key=Path("/home/owner/.ssh/neo-atari.pem"),
         hostname="203.0.113.10.sslip.io",
         backup_bucket="dutch-blitz-scores-example",
         acme_email="",
@@ -287,7 +286,7 @@ class _FakeClock:
 
 
 def test_ssh_probe_is_a_batch_login_with_a_connect_timeout():
-    argv = ssh_probe_argv("203.0.113.10", "/k.pem")
+    argv = ssh_probe_argv("203.0.113.10", Path("/k.pem"))
     assert argv[0] == "ssh"
     assert "BatchMode=yes" in argv
     assert any(a.startswith("ConnectTimeout=") for a in argv)
@@ -303,27 +302,42 @@ def test_wait_for_ssh_retries_until_the_login_succeeds():
         calls.append(argv)
         return _Result(next(codes))
 
-    assert wait_for_ssh("203.0.113.10", "/k.pem", timeout=60, interval=5,
-                        run=run, sleep=clock.sleep, clock=clock)
+    assert wait_for_ssh(
+        "203.0.113.10",
+        Path("/k.pem"),
+        timeout=60,
+        interval=5,
+        run=run,
+        sleep=clock.sleep,
+        clock=clock,
+    )
     assert len(calls) == 3
     assert clock.now == 10
 
 
 def test_route53_name_is_the_fqdn_and_sslip_stays_when_unset():
-    assert hostname_for(
-        "203.0.113.10",
-        dns_zone_name="sixofonedev.com",
-        dns_record_name="blitz",
-    ) == "blitz.sixofonedev.com"
-    assert hostname_for(
-        "203.0.113.10",
-        "scores.example.com",
-        dns_zone_name="SixOfOneDev.com.",
-        dns_record_name="Blitz.",
-    ) == "blitz.sixofonedev.com"
+    assert (
+        hostname_for(
+            "203.0.113.10",
+            dns_zone_name="sixofonedev.com",
+            dns_record_name="blitz",
+        )
+        == "blitz.sixofonedev.com"
+    )
+    assert (
+        hostname_for(
+            "203.0.113.10",
+            "scores.example.com",
+            dns_zone_name="SixOfOneDev.com.",
+            dns_record_name="Blitz.",
+        )
+        == "blitz.sixofonedev.com"
+    )
     assert https_origin("blitz.sixofonedev.com") == "https://blitz.sixofonedev.com"
     assert hostname_for("203.0.113.10", dns_zone_name="  ") == "203.0.113.10.sslip.io"
-    assert hostname_for("203.0.113.10", "scores.example.com", dns_zone_name="") == "scores.example.com"
+    assert (
+        hostname_for("203.0.113.10", "scores.example.com", dns_zone_name="") == "scores.example.com"
+    )
     assert dns_fqdn(None, "blitz") is None
 
 
@@ -333,7 +347,9 @@ def test_route53_name_rejects_urls_and_clerk_labels():
     with pytest.raises(ValueError):
         hostname_for("203.0.113.10", dns_zone_name="sixofonedev.com", dns_record_name="clerk")
     with pytest.raises(ValueError):
-        hostname_for("203.0.113.10", dns_zone_name="sixofonedev.com", dns_record_name="clk._domainkey")
+        hostname_for(
+            "203.0.113.10", dns_zone_name="sixofonedev.com", dns_record_name="clk._domainkey"
+        )
     with pytest.raises(ValueError):
         hostname_for("203.0.113.10", dns_zone_name="sixofonedev.com", dns_record_name="")
 
@@ -599,13 +615,24 @@ def test_doh_keeps_a_real_google_answer_and_route53_can_block_it():
 
 
 def test_doh_json_and_route53_listing():
-    assert a_records_from_doh({"Status": 0, "Answer": [{"type": 1, "data": "203.0.113.10"}, {"type": 5, "data": "other."}]}) == [
-        "203.0.113.10"
-    ]
+    assert a_records_from_doh(
+        {
+            "Status": 0,
+            "Answer": [{"type": 1, "data": "203.0.113.10"}, {"type": 5, "data": "other."}],
+        }
+    ) == ["203.0.113.10"]
     assert a_records_from_doh({"Status": 3}) == []
     sets = [
-        {"Name": "clerk.sixofonedev.com.", "Type": "CNAME", "ResourceRecords": [{"Value": "accounts.example.com"}]},
-        {"Name": "blitz.sixofonedev.com.", "Type": "A", "ResourceRecords": [{"Value": "203.0.113.10"}]},
+        {
+            "Name": "clerk.sixofonedev.com.",
+            "Type": "CNAME",
+            "ResourceRecords": [{"Value": "accounts.example.com"}],
+        },
+        {
+            "Name": "blitz.sixofonedev.com.",
+            "Type": "A",
+            "ResourceRecords": [{"Value": "203.0.113.10"}],
+        },
     ]
     assert a_records_from_route53("blitz.sixofonedev.com", sets) == ["203.0.113.10"]
     assert a_records_from_route53("missing.sixofonedev.com", sets) == []
@@ -641,13 +668,21 @@ def test_route53_lookup_reads_the_zone_and_stops_when_aws_fails():
                 "NextRecordName": "blitz.sixofonedev.com.",
                 "NextRecordType": "A",
                 "ResourceRecordSets": [
-                    {"Name": "clerk.sixofonedev.com.", "Type": "CNAME", "ResourceRecords": [{"Value": "x"}]},
+                    {
+                        "Name": "clerk.sixofonedev.com.",
+                        "Type": "CNAME",
+                        "ResourceRecords": [{"Value": "x"}],
+                    },
                 ],
             },
             {
                 "IsTruncated": False,
                 "ResourceRecordSets": [
-                    {"Name": "blitz.sixofonedev.com.", "Type": "A", "ResourceRecords": [{"Value": "203.0.113.10"}]},
+                    {
+                        "Name": "blitz.sixofonedev.com.",
+                        "Type": "A",
+                        "ResourceRecords": [{"Value": "203.0.113.10"}],
+                    },
                 ],
             },
         ]
@@ -658,7 +693,9 @@ def test_route53_lookup_reads_the_zone_and_stops_when_aws_fails():
         commands.append(argv)
         return _AwsResult(0, json.dumps(next(pages)))
 
-    assert route53_a_records("blitz.sixofonedev.com", "sixofonedev.com", run=run) == ["203.0.113.10"]
+    assert route53_a_records("blitz.sixofonedev.com", "sixofonedev.com", run=run) == [
+        "203.0.113.10"
+    ]
     assert commands[0][1:3] == ["route53", "list-hosted-zones-by-name"]
     assert commands[1][1:3] == ["route53", "list-resource-record-sets"]
     assert "--hosted-zone-id" in commands[1]
@@ -679,7 +716,9 @@ def test_ssh_key_flag_env_and_pem_agree(monkeypatch):
     monkeypatch.setenv("DUTCH_BLITZ_SSH_KEY", "~/keys/bot.pem")
     assert resolve_ssh_key(None) == str(Path.home() / "keys" / "bot.pem")
     assert resolve_ssh_key("/tmp/other.pem") == "/tmp/other.pem"
-    assert build_parser().parse_args(["up", "--ssh-key", "/tmp/flag.pem"]).ssh_key == "/tmp/flag.pem"
+    assert (
+        build_parser().parse_args(["up", "--ssh-key", "/tmp/flag.pem"]).ssh_key == "/tmp/flag.pem"
+    )
 
 
 def test_main_uses_the_same_ssh_key_for_up_configure_backup_and_down(monkeypatch):
@@ -731,8 +770,15 @@ def test_wait_for_ssh_gives_up_after_the_timeout():
         calls.append(argv)
         return _Result(255)
 
-    assert not wait_for_ssh("203.0.113.10", "/k.pem", timeout=20, interval=5,
-                            run=run, sleep=clock.sleep, clock=clock)
+    assert not wait_for_ssh(
+        "203.0.113.10",
+        Path("/k.pem"),
+        timeout=20,
+        interval=5,
+        run=run,
+        sleep=clock.sleep,
+        clock=clock,
+    )
     assert clock.now <= 20
     assert len(calls) == 5
 
@@ -765,13 +811,17 @@ def test_describe_instances_treats_not_found_as_gone_and_errors_as_unknown():
 
 
 def test_down_skips_ssh_backup_when_the_instance_already_terminated(monkeypatch, capsys):
-    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true", "aws_region": "us-east-2"})
+    monkeypatch.setattr(
+        host_cli, "load_tfvars", lambda: {"enable_aws": "true", "aws_region": "us-east-2"}
+    )
     monkeypatch.setattr(
         host_cli,
         "terraform_outputs",
         lambda _path: {"instance_id": {"value": "i-0123456789abcdef0"}},
     )
-    monkeypatch.setattr(host_cli, "describe_instance_state", lambda *_args, **_kwargs: ("terminated", False))
+    monkeypatch.setattr(
+        host_cli, "describe_instance_state", lambda *_args, **_kwargs: ("terminated", False)
+    )
     called = {"backup": 0, "destroy": 0}
 
     def backup(**_kwargs):
@@ -785,7 +835,9 @@ def test_down_skips_ssh_backup_when_the_instance_already_terminated(monkeypatch,
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
-    assert host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    assert (
+        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    )
     assert called == {"backup": 0, "destroy": 1}
     assert "Skipping the SSH backup" in capsys.readouterr().out
 
@@ -806,26 +858,32 @@ def test_down_still_backs_up_when_describe_fails(monkeypatch):
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
-    assert host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    assert (
+        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    )
     assert called["backup"] == 1
 
 
 def test_down_refuses_to_destroy_when_the_final_backup_fails(monkeypatch):
     monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
-    monkeypatch.setattr(host_cli, "instance_already_gone", lambda _tfvars: (False, "instance is running"))
+    monkeypatch.setattr(
+        host_cli, "instance_already_gone", lambda _tfvars: (False, "instance is running")
+    )
     monkeypatch.setattr(host_cli, "cmd_backup", lambda **_kwargs: 1)
 
     def destroy(*_args, **_kwargs):
         raise AssertionError("destroyed")
 
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
-    assert host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 1
+    assert (
+        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 1
+    )
 
 
 def test_inventory_can_carry_idle_limits_without_the_alert_email():
     inventory = render_aws_inventory(
         public_ip="203.0.113.10",
-        ssh_key="/home/owner/.ssh/neo-atari.pem",
+        ssh_key=Path("/home/owner/.ssh/neo-atari.pem"),
         hostname="blitz.example.com",
         backup_bucket="dutch-blitz-scores-example",
         acme_email="",
@@ -844,7 +902,9 @@ def test_inventory_can_carry_idle_limits_without_the_alert_email():
 def test_bot_policy_is_unchanged_for_idle_shutdown():
     # The instance publishes with its own role. up and down do not call SNS,
     # so the bot policy stays free of sns: and of ModifyInstanceAttribute.
-    text = (Path(__file__).resolve().parents[1] / "docs" / "grok-bot-dutch-blitz-policy.json").read_text(encoding="utf-8")
+    text = (
+        Path(__file__).resolve().parents[1] / "docs" / "grok-bot-dutch-blitz-policy.json"
+    ).read_text(encoding="utf-8")
     assert "sns:" not in text
     assert "ModifyInstanceAttribute" not in text
     assert "ec2:Describe*" in text

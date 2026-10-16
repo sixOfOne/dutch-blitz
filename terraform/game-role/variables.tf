@@ -20,36 +20,42 @@ variable "name_prefix" {
   default     = "dutch-blitz"
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "instance_type" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = string
   default     = "t3.small"
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "root_volume_gb" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = number
   default     = 8
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "key_name" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = string
   default     = "neo-atari"
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "ssh_ingress_cidr" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = string
   default     = ""
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "ssh_ingress_cidrs" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = list(string)
   default     = []
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "extra_ssh_public_keys" {
   description = "Declared so the shared tfvars file applies. Unused by this stack. The game-night stack installs these keys for ec2-user."
   type        = list(string)
@@ -72,24 +78,28 @@ variable "backup_bucket_name" {
   default     = ""
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "domain" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = string
   default     = ""
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "acme_email" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = string
   default     = ""
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "dns_zone_name" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = string
   default     = ""
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "dns_record_name" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = string
@@ -118,6 +128,7 @@ variable "alert_email" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "idle_warn_minutes" {
   description = "Declared so the shared tfvars file applies. Unused by this stack. The host timer reads it."
   type        = number
@@ -140,6 +151,7 @@ variable "idle_shutdown_minutes" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "uptime_warn_minutes" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = number
@@ -162,6 +174,7 @@ variable "uptime_shutdown_minutes" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "idle_snooze_minutes" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = number
@@ -173,6 +186,7 @@ variable "idle_snooze_minutes" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "idle_check_minutes" {
   description = "Declared so the shared tfvars file applies. Unused by this stack."
   type        = number

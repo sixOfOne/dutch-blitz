@@ -170,9 +170,13 @@ def test_revoke_rotate_and_disable_leave_history_intact(client):
     location = start(client)
     page = client.get(location, headers=auth(OWNER))
     ada_id, bo_id = player_ids(page.text)
-    client.post(f"{location}/invite", data={"mode": "create"}, headers=auth(OWNER), follow_redirects=False)
+    client.post(
+        f"{location}/invite", data={"mode": "create"}, headers=auth(OWNER), follow_redirects=False
+    )
     token = invite_token(client.get(location, headers=auth(OWNER)).text)
-    client.post(f"/join/{token}", data={"player_id": bo_id}, headers=auth(BO), follow_redirects=False)
+    client.post(
+        f"/join/{token}", data={"player_id": bo_id}, headers=auth(BO), follow_redirects=False
+    )
     client.post(
         f"{location}/rounds",
         data={
@@ -195,7 +199,9 @@ def test_revoke_rotate_and_disable_leave_history_intact(client):
     assert "Ada" not in client.get("/", headers=auth(BO)).text
     assert "All tied at 2" in client.get(location, headers=auth(OWNER)).text
 
-    client.post(f"/join/{token}", data={"player_id": bo_id}, headers=auth(BO), follow_redirects=False)
+    client.post(
+        f"/join/{token}", data={"player_id": bo_id}, headers=auth(BO), follow_redirects=False
+    )
     rotated = client.post(
         f"{location}/invite",
         data={"mode": "rotate"},
@@ -249,13 +255,17 @@ def test_owner_can_claim_a_seat_without_an_invite(client):
 
 def test_signed_out_join_does_not_claim_a_seat(client, tmp_path):
     location = start(client)
-    client.post(f"{location}/invite", data={"mode": "create"}, headers=auth(OWNER), follow_redirects=False)
+    client.post(
+        f"{location}/invite", data={"mode": "create"}, headers=auth(OWNER), follow_redirects=False
+    )
     token = invite_token(client.get(location, headers=auth(OWNER)).text)
     denied = client.get(f"/join/{token}")
     assert denied.status_code == 401
     assert "Ada" not in denied.text
     with sqlite3.connect(tmp_path / "share.sqlite") as conn:
-        claimed = conn.execute("SELECT COUNT(*) FROM players WHERE user_id IS NOT NULL").fetchone()[0]
+        claimed = conn.execute("SELECT COUNT(*) FROM players WHERE user_id IS NOT NULL").fetchone()[
+            0
+        ]
     assert claimed == 0
 
 

@@ -8,7 +8,7 @@ latest backup is the last name in lexicographic order.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 BACKUP_PREFIX = "dutch-blitz"
@@ -40,9 +40,9 @@ def backup_sqlite(source: Path, destination: Path) -> None:
 def backup_object_name(moment: datetime) -> str:
     """UTC timestamp key, for example ``20261010T131500Z.sqlite``."""
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
+        moment = moment.replace(tzinfo=UTC)
     else:
-        moment = moment.astimezone(timezone.utc)
+        moment = moment.astimezone(UTC)
     return moment.strftime("%Y%m%dT%H%M%SZ.sqlite")
 
 
@@ -79,7 +79,7 @@ def latest_backup_name(listing: str) -> str | None:
             names.append(parts[-1])
     if not names:
         return None
-    return sorted(names)[-1]
+    return max(names)
 
 
 def destroy_plan(*, skip_backup: bool, instance_gone: bool = False) -> list[str]:

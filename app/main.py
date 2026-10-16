@@ -1,15 +1,25 @@
 """Phone-friendly Dutch Blitz score pages."""
 
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.datastructures import FormData
 
 from app.activity import note_activity
-from app.auth import SESSION_COOKIE, AuthError, DevBypassVerifier, verifier_from_env
+from app.auth import (
+    SESSION_COOKIE,
+    AuthError,
+    CurrentUser,
+    DevBypassVerifier,
+    SessionVerifier,
+    verifier_from_env,
+)
 from app.config import clerk_browser_config
 from app.config import db_path as configured_db_path
 from app.decks import COLORS, ICONS, deck_face
@@ -46,16 +56,18 @@ templates.env.globals.update(
 )
 
 
-def create_app(db_path: str | None = None, verifier=None) -> FastAPI:
+def create_app(db_path: str | None = None, verifier: SessionVerifier | None = None) -> FastAPI:
     selected = db_path
     selected_verifier = verifier
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         store = GameStore(selected if selected is not None else configured_db_path())
         store.init()
         app.state.store = store
-        app.state.verifier = selected_verifier if selected_verifier is not None else verifier_from_env()
+        app.state.verifier = (
+            selected_verifier if selected_verifier is not None else verifier_from_env()
+        )
         yield
 
     app = FastAPI(
@@ -69,7 +81,10 @@ def create_app(db_path: str | None = None, verifier=None) -> FastAPI:
     _register_routes(app)
 
     @app.middleware("http")
-    async def require_user(request: Request, call_next):
+    async def require_user(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         # Any request, including a signed-out visit or a static file, means
         # someone has the site open. The idle timer reads the stamp. This
         # does not snooze the uptime limit and it is not a shutdown switch.
@@ -91,15 +106,21 @@ def create_app(db_path: str | None = None, verifier=None) -> FastAPI:
 
 def _register_routes(app: FastAPI) -> None:
     @app.get("/")
-    def home(request: Request):
-        return _home(request, error=None, names=[], colors=None, icons=None, target=str(DEFAULT_TARGET))
+    def home(request: Request) -> Response:
+        return _home(
+            request, error=None, names=[], colors=None, icons=None, target=str(DEFAULT_TARGET)
+        )
 
     @app.post("/games")
-    async def create_game(request: Request):
+    async def create_game(request: Request) -> Response:
         form = await request.form()
         names, colors, icons = _posted_players(form)
         target_raw = form.get("target_score")
-        target_text = str(DEFAULT_TARGET) if target_raw is None or str(target_raw).strip() == "" else str(target_raw)
+        target_text = (
+            str(DEFAULT_TARGET)
+            if target_raw is None or str(target_raw).strip() == ""
+            else str(target_raw)
+        )
         try:
             game_id = _store(request).create_game(
                 names,
@@ -121,7 +142,7 @@ def _register_routes(app: FastAPI) -> None:
         return RedirectResponse(url=f"/games/{game_id}", status_code=303)
 
     @app.get("/games/{game_id}")
-    def show_game(request: Request, game_id: int, edit: int = 0):
+    def show_game(request: Request, game_id: int, edit: int = 0) -> Response:
         user = _user(request)
         game = _store(request).get_game(game_id, user)
         if game is None:
@@ -131,7 +152,7 @@ def _register_routes(app: FastAPI) -> None:
         return _game_page(request, game, draft=draft, editing=editing)
 
     @app.post("/games/{game_id}/invite")
-    async def update_invite(request: Request, game_id: int):
+    async def update_invite(request: Request, game_id: int) -> Response:
         form = await request.form()
         mode = str(form.get("mode") or "")
         if mode not in {"create", "rotate", "disable"}:
@@ -146,7 +167,7 @@ def _register_routes(app: FastAPI) -> None:
         return RedirectResponse(url=f"/games/{game_id}", status_code=303)
 
     @app.post("/games/{game_id}/seats/{player_id}/claim")
-    def claim_seat(request: Request, game_id: int, player_id: int):
+    def claim_seat(request: Request, game_id: int, player_id: int) -> Response:
         user = _user(request)
         try:
             _store(request).claim_own_seat(game_id, player_id, owner_id=user)
@@ -159,7 +180,7 @@ def _register_routes(app: FastAPI) -> None:
         return RedirectResponse(url=f"/games/{game_id}", status_code=303)
 
     @app.post("/games/{game_id}/seats/{player_id}/revoke")
-    def revoke_seat(request: Request, game_id: int, player_id: int):
+    def revoke_seat(request: Request, game_id: int, player_id: int) -> Response:
         user = _user(request)
         try:
             _store(request).revoke_seat(game_id, player_id, owner_id=user)
@@ -172,19 +193,20 @@ def _register_routes(app: FastAPI) -> None:
         return RedirectResponse(url=f"/games/{game_id}", status_code=303)
 
     @app.get("/join/{token}")
-    def show_invite(request: Request, token: str):
+    def show_invite(request: Request, token: str) -> Response:
         return _invite_page(request, token, error=None)
 
     @app.post("/join/{token}")
-    async def accept_invite(request: Request, token: str):
+    async def accept_invite(request: Request, token: str) -> Response:
         form = await request.form()
         raw_seat = form.get("player_id")
+        seat_text = raw_seat if isinstance(raw_seat, str) else None
         user = _user(request)
         store = _store(request)
-        if raw_seat is None or not str(raw_seat).isdigit():
+        if seat_text is None or not seat_text.isdigit():
             return _invite_page(request, token, error="Pick an open seat.", status_code=400)
         try:
-            game_id = store.join_game(token, int(raw_seat), user_id=user)
+            game_id = store.join_game(token, int(seat_text), user_id=user)
         except NotFoundError:
             return _invite_missing(request)
         except ScoringError as exc:
@@ -192,15 +214,15 @@ def _register_routes(app: FastAPI) -> None:
         return RedirectResponse(url=f"/games/{game_id}", status_code=303)
 
     @app.post("/games/{game_id}/rounds")
-    async def save_round(request: Request, game_id: int):
+    async def save_round(request: Request, game_id: int) -> Response:
         return await _save_counts(request, game_id, replace=False)
 
     @app.post("/games/{game_id}/rounds/last")
-    async def replace_round(request: Request, game_id: int):
+    async def replace_round(request: Request, game_id: int) -> Response:
         return await _save_counts(request, game_id, replace=True)
 
     @app.post("/games/{game_id}/undo")
-    def undo_round(request: Request, game_id: int):
+    def undo_round(request: Request, game_id: int) -> Response:
         store = _store(request)
         user = _user(request)
         try:
@@ -218,11 +240,11 @@ def _register_routes(app: FastAPI) -> None:
 
 
 def _store(request: Request) -> GameStore:
-    return request.app.state.store
+    return cast(GameStore, request.app.state.store)
 
 
 def _user(request: Request) -> str:
-    return request.state.user.user_id
+    return cast(CurrentUser, request.state.user).user_id
 
 
 def _is_owner(game: Game, user_id: str) -> bool:
@@ -243,7 +265,7 @@ def _wants_json(request: Request) -> bool:
     return "application/json" in accept and "text/html" not in accept
 
 
-def _auth_context(request: Request) -> dict:
+def _auth_context(request: Request) -> dict[str, object]:
     user = getattr(request.state, "user", None)
     verifier = getattr(request.app.state, "verifier", None)
     bypass = isinstance(verifier, DevBypassVerifier) and user is not None
@@ -254,19 +276,21 @@ def _auth_context(request: Request) -> dict:
     }
 
 
-def _render(request: Request, name: str, context: dict, status_code: int = 200):
+def _render(
+    request: Request, name: str, context: dict[str, object], status_code: int = 200
+) -> Response:
     payload = _auth_context(request)
     payload.update(context)
     return templates.TemplateResponse(request, name, payload, status_code=status_code)
 
 
-def _unauthenticated(request: Request):
+def _unauthenticated(request: Request) -> Response:
     if _wants_json(request):
         return JSONResponse({"detail": "Sign in to continue."}, status_code=401)
     return _render(request, "sign_in.html", {}, status_code=401)
 
 
-def _posted_players(form) -> tuple[list[str], list[str], list[str]]:
+def _posted_players(form: FormData) -> tuple[list[str], list[str], list[str]]:
     names = [str(value) for value in form.getlist("player_name")]
     colors = [str(form.get(f"player_color_{index}") or "") for index in range(1, len(names) + 1)]
     icons = [str(form.get(f"player_icon_{index}") or "") for index in range(1, len(names) + 1)]
@@ -288,7 +312,7 @@ def _home(
     icons: list[str] | None,
     target: str,
     status_code: int = 200,
-):
+) -> Response:
     user = _user(request)
     games = [summarize(game, viewer_id=user) for game in _store(request).list_games(user)]
     if colors is None:
@@ -321,7 +345,7 @@ def _game_page(
     draft: dict | None = None,
     editing: bool = False,
     status_code: int = 200,
-):
+) -> Response:
     user = _user(request)
     is_owner = _is_owner(game, user)
     you = next((player for player in game.players if player.user_id == user), None)
@@ -342,7 +366,7 @@ def _game_page(
     )
 
 
-def _share_context(request: Request, game: Game) -> dict:
+def _share_context(request: Request, game: Game) -> dict[str, object]:
     user = _user(request)
     url = None
     if game.invite_token:
@@ -367,21 +391,23 @@ def _share_context(request: Request, game: Game) -> dict:
     return {"url": url, "seats": seats}
 
 
-def _forbidden(request: Request, game_id: int, message: str):
+def _forbidden(request: Request, game_id: int, message: str) -> Response:
     game = _store(request).get_game(game_id, _user(request))
     if game is None:
         return _missing(request)
     return _game_page(request, game, error=message, status_code=403)
 
 
-def _game_or_missing(request: Request, game_id: int, *, error: str, status_code: int):
+def _game_or_missing(request: Request, game_id: int, *, error: str, status_code: int) -> Response:
     game = _store(request).get_game(game_id, _user(request))
     if game is None:
         return _missing(request)
     return _game_page(request, game, error=error, status_code=status_code)
 
 
-def _invite_page(request: Request, token: str, *, error: str | None, status_code: int = 200):
+def _invite_page(
+    request: Request, token: str, *, error: str | None, status_code: int = 200
+) -> Response:
     preview = _store(request).describe_invite(token, user_id=_user(request))
     if preview is None:
         return _invite_missing(request)
@@ -395,11 +421,11 @@ def _invite_page(request: Request, token: str, *, error: str | None, status_code
     )
 
 
-def _invite_missing(request: Request):
+def _invite_missing(request: Request) -> Response:
     return _render(request, "invite_missing.html", {}, status_code=404)
 
 
-def _missing(request: Request):
+def _missing(request: Request) -> Response:
     return _render(request, "not_found.html", {}, status_code=404)
 
 
@@ -415,7 +441,7 @@ def _draft_from_last(game: Game) -> dict[str, dict[str, str]]:
     }
 
 
-def _raw_draft(game: Game, form) -> dict[str, dict[str, str]]:
+def _raw_draft(game: Game, form: FormData) -> dict[str, dict[str, str]]:
     draft = {}
     for player in game.players:
         dutch = form.get(f"dutch_{player.id}")
@@ -427,7 +453,7 @@ def _raw_draft(game: Game, form) -> dict[str, dict[str, str]]:
     return draft
 
 
-def _parsed_counts(game: Game, form) -> dict[int, tuple[int, int]]:
+def _parsed_counts(game: Game, form: FormData) -> dict[int, tuple[int, int]]:
     counts = {}
     for player in game.players:
         dutch_raw = form.get(f"dutch_{player.id}")
@@ -435,13 +461,17 @@ def _parsed_counts(game: Game, form) -> dict[int, tuple[int, int]]:
         if dutch_raw is None or blitz_raw is None:
             raise ScoringError("Enter Dutch and Blitz counts for every player.")
         counts[player.id] = (
-            parse_count(str(dutch_raw), label=f"Dutch cards for {player.name}", maximum=MAX_DUTCH_CARDS),
-            parse_count(str(blitz_raw), label=f"Blitz cards left for {player.name}", maximum=MAX_BLITZ_LEFT),
+            parse_count(
+                str(dutch_raw), label=f"Dutch cards for {player.name}", maximum=MAX_DUTCH_CARDS
+            ),
+            parse_count(
+                str(blitz_raw), label=f"Blitz cards left for {player.name}", maximum=MAX_BLITZ_LEFT
+            ),
         )
     return counts
 
 
-async def _save_counts(request: Request, game_id: int, *, replace: bool):
+async def _save_counts(request: Request, game_id: int, *, replace: bool) -> Response:
     store = _store(request)
     user = _user(request)
     game = store.get_game(game_id, user)

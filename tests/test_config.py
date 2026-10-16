@@ -98,7 +98,9 @@ def test_explicit_clerk_urls_and_parties(monkeypatch):
     monkeypatch.setenv("CLERK_FRONTEND_API", "custom.example")
     monkeypatch.setenv("CLERK_ISSUER", "https://issuer.example/")
     monkeypatch.setenv("CLERK_JWKS_URL", "https://issuer.example/jwks")
-    monkeypatch.setenv("CLERK_AUTHORIZED_PARTIES", " http://127.0.0.1:8000, https://scores.example ")
+    monkeypatch.setenv(
+        "CLERK_AUTHORIZED_PARTIES", " http://127.0.0.1:8000, https://scores.example "
+    )
     assert clerk_issuer() == "https://issuer.example"
     assert clerk_jwks_url() == "https://issuer.example/jwks"
     assert clerk_authorized_parties() == ("http://127.0.0.1:8000", "https://scores.example")

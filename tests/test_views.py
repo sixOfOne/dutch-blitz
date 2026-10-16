@@ -6,8 +6,7 @@ from app.views import format_timestamp, present
 
 def _game(totals: dict[str, int], target: int, *, rounds: int = 1) -> Game:
     players = [
-        Player(id=index, name=name, seat=index)
-        for index, name in enumerate(totals, start=1)
+        Player(id=index, name=name, seat=index) for index, name in enumerate(totals, start=1)
     ]
     played = []
     if rounds:

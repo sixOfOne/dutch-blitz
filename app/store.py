@@ -1,12 +1,13 @@
 """SQLite persistence for games, players, and rounds."""
 
-from collections.abc import Mapping, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
 import secrets
 import sqlite3
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import cast
 
 from app.decks import assign_decks
 from app.errors import ForbiddenError, NotFoundError, ScoringError
@@ -134,7 +135,7 @@ def require_owner_id(owner_id: str) -> str:
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 class GameStore:
@@ -346,7 +347,10 @@ class GameStore:
                     (round_id, player_id, dutch_cards, blitz_left, score)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                [(round_id, player_id, dutch, blitz, score) for player_id, dutch, blitz, score in scored],
+                [
+                    (round_id, player_id, dutch, blitz, score)
+                    for player_id, dutch, blitz, score in scored
+                ],
             )
             self._apply_status(conn, game_id, game_row["target_score"])
         game = self.get_game(game_id, user)
@@ -433,7 +437,7 @@ class GameStore:
         return conn
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -520,7 +524,9 @@ class GameStore:
             )
         ]
 
-    def _last_round_row(self, conn: sqlite3.Connection, game_id: int, *, missing: str) -> sqlite3.Row:
+    def _last_round_row(
+        self, conn: sqlite3.Connection, game_id: int, *, missing: str
+    ) -> sqlite3.Row:
         last = conn.execute(
             """
             SELECT id, round_number
@@ -533,7 +539,7 @@ class GameStore:
         ).fetchone()
         if last is None:
             raise ScoringError(missing)
-        return last
+        return cast(sqlite3.Row, last)
 
     def _score_counts(
         self,

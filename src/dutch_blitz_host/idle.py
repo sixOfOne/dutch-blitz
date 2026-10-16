@@ -39,9 +39,11 @@ import subprocess
 import sys
 import time
 import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 # These match the Terraform variable defaults. Ansible writes the same
 # numbers into /etc/dutch-blitz/idle.env from terraform.tfvars.
@@ -158,8 +160,7 @@ def decide(snapshot: Snapshot, limits: Limits) -> Decision:
     # A warn threshold that is not strictly before shutdown is not a
     # separate email. The shutdown branch covers that moment.
     idle_past_warn = (
-        limits.idle_warn_minutes < limits.idle_shutdown_minutes
-        and idle >= limits.idle_warn_minutes
+        limits.idle_warn_minutes < limits.idle_shutdown_minutes and idle >= limits.idle_warn_minutes
     )
     uptime_past_warn = lead > 0 and uptime >= uptime_warn_at
 
@@ -170,14 +171,14 @@ def decide(snapshot: Snapshot, limits: Limits) -> Decision:
 
     idle_left = limits.idle_shutdown_minutes - idle
     uptime_left = deadline - uptime
-    fields = dict(
-        uptime_minutes=uptime,
-        idle_minutes=idle,
-        shutdown_in_minutes=min(idle_left, uptime_left),
-        uptime_deadline_minutes=deadline,
-        idle_shutdown_in_minutes=idle_left,
-        uptime_shutdown_in_minutes=uptime_left,
-    )
+    fields = {
+        "uptime_minutes": uptime,
+        "idle_minutes": idle,
+        "shutdown_in_minutes": min(idle_left, uptime_left),
+        "uptime_deadline_minutes": deadline,
+        "idle_shutdown_in_minutes": idle_left,
+        "uptime_shutdown_in_minutes": uptime_left,
+    }
 
     shutdown_reasons: list[str] = []
     if idle >= limits.idle_shutdown_minutes:
@@ -231,7 +232,7 @@ def format_minutes(minutes: float) -> str:
 
 
 def format_utc(epoch: float) -> str:
-    moment = datetime.fromtimestamp(epoch, timezone.utc)
+    moment = datetime.fromtimestamp(epoch, UTC)
     return moment.strftime("%Y-%m-%d %H:%M UTC")
 
 
@@ -362,9 +363,9 @@ def perform_check(
     *,
     now: float,
     public_url: str,
-    publish,
-    backup,
-    halt,
+    publish: Callable[[str, str], bool],
+    backup: Callable[[], int],
+    halt: Callable[[], None],
 ) -> CheckOutcome:
     """Run the side effects for one decision.
 
@@ -495,16 +496,31 @@ def limits_from_mapping(values: dict[str, str]) -> Limits:
     Missing keys use the defaults. A bad number stops the command instead
     of being treated as zero, which would shut the host down immediately.
     """
-    idle_warn = _minutes(values, "idle_warn_minutes", "IDLE_WARN_MINUTES", DEFAULT_IDLE_WARN_MINUTES)
-    idle_stop = _minutes(values, "idle_shutdown_minutes", "IDLE_SHUTDOWN_MINUTES", DEFAULT_IDLE_SHUTDOWN_MINUTES)
-    up_warn = _minutes(values, "uptime_warn_minutes", "UPTIME_WARN_MINUTES", DEFAULT_UPTIME_WARN_MINUTES)
-    up_stop = _minutes(values, "uptime_shutdown_minutes", "UPTIME_SHUTDOWN_MINUTES", DEFAULT_UPTIME_SHUTDOWN_MINUTES)
+    idle_warn = _minutes(
+        values, "idle_warn_minutes", "IDLE_WARN_MINUTES", DEFAULT_IDLE_WARN_MINUTES
+    )
+    idle_stop = _minutes(
+        values, "idle_shutdown_minutes", "IDLE_SHUTDOWN_MINUTES", DEFAULT_IDLE_SHUTDOWN_MINUTES
+    )
+    up_warn = _minutes(
+        values, "uptime_warn_minutes", "UPTIME_WARN_MINUTES", DEFAULT_UPTIME_WARN_MINUTES
+    )
+    up_stop = _minutes(
+        values,
+        "uptime_shutdown_minutes",
+        "UPTIME_SHUTDOWN_MINUTES",
+        DEFAULT_UPTIME_SHUTDOWN_MINUTES,
+    )
     snooze = _minutes(values, "idle_snooze_minutes", "IDLE_SNOOZE_MINUTES", DEFAULT_SNOOZE_MINUTES)
     check = _minutes(values, "idle_check_minutes", "IDLE_CHECK_MINUTES", DEFAULT_CHECK_MINUTES)
     if idle_warn < 1 or idle_warn >= idle_stop:
-        raise SystemExit("idle_warn_minutes must be at least 1 and less than idle_shutdown_minutes.")
+        raise SystemExit(
+            "idle_warn_minutes must be at least 1 and less than idle_shutdown_minutes."
+        )
     if up_warn < 1 or up_warn >= up_stop:
-        raise SystemExit("uptime_warn_minutes must be at least 1 and less than uptime_shutdown_minutes.")
+        raise SystemExit(
+            "uptime_warn_minutes must be at least 1 and less than uptime_shutdown_minutes."
+        )
     if not 1 <= snooze <= 24 * 60:
         raise SystemExit("idle_snooze_minutes must be from 1 to 1440.")
     if not 1 <= check <= 60:
@@ -799,7 +815,7 @@ def resolve_topic_arn(env: dict[str, str], account_id: str) -> str:
     return build_topic_arn(region, account_id, name)
 
 
-def _state_path(env: dict[str, str]) -> Path:
+def _state_path(env: Mapping[str, str]) -> Path:
     raw = env.get("IDLE_STATE_PATH", "").strip() or "/var/lib/dutch-blitz-idle/state.json"
     return Path(raw)
 
@@ -831,14 +847,21 @@ def cmd_snooze(env: dict[str, str] | None = None, *, now: float | None = None) -
     return 0
 
 
-def cmd_check(env: dict[str, str] | None = None, *, runner=None, account_lookup=None) -> int:
+def cmd_check(
+    env: dict[str, str] | None = None,
+    *,
+    runner: Any = None,
+    account_lookup: Callable[[], str] | None = None,
+) -> int:
     """One timer tick. Reads local files, then maybe SNS, backup, and shutdown."""
     values = dict(os.environ if env is None else env)
     limits = limits_from_mapping(values)
     now = time.time()
     uptime_seconds = read_uptime_seconds()
     log_path = Path(values.get("IDLE_ACCESS_LOG", "").strip() or "/var/log/caddy/access.log")
-    activity_path = Path(values.get("IDLE_ACTIVITY_PATH", "").strip() or "/var/lib/dutch-blitz/last-activity")
+    activity_path = Path(
+        values.get("IDLE_ACTIVITY_PATH", "").strip() or "/var/lib/dutch-blitz/last-activity"
+    )
     state_path = _state_path(values)
     state = load_state(state_path)
     snapshot = observe(
@@ -852,9 +875,15 @@ def cmd_check(env: dict[str, str] | None = None, *, runner=None, account_lookup=
 
     def publish(subject: str, message: str) -> bool:
         try:
-            account = account_lookup() if account_lookup is not None else fetch_instance_account_id()
+            account = (
+                account_lookup() if account_lookup is not None else fetch_instance_account_id()
+            )
             topic = resolve_topic_arn(values, account)
-            region = values.get("AWS_REGION", "").strip() or values.get("AWS_DEFAULT_REGION", "").strip() or "us-east-2"
+            region = (
+                values.get("AWS_REGION", "").strip()
+                or values.get("AWS_DEFAULT_REGION", "").strip()
+                or "us-east-2"
+            )
             completed = run(sns_publish_argv(topic, subject, message, region), timeout=30)
         except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             print(f"Could not send the SNS email: {exc}", file=sys.stderr)

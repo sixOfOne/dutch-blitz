@@ -8,6 +8,7 @@ sent to the browser.
 """
 
 from collections.abc import Callable
+from typing import Any, Protocol
 
 import jwt
 
@@ -30,6 +31,12 @@ KeyLoader = Callable[[str], object]
 class CurrentUser:
     def __init__(self, user_id: str) -> None:
         self.user_id = user_id
+
+
+class SessionVerifier(Protocol):
+    """Anything the app can ask ``who is this request``."""
+
+    def verify(self, token: str) -> CurrentUser: ...
 
 
 class DevBypassVerifier:
@@ -91,7 +98,7 @@ class ClerkTokenVerifier:
             raise AuthError("Sign in to continue.")
         return CurrentUser(subject.strip())
 
-    def _signing_key(self, token: str) -> object:
+    def _signing_key(self, token: str) -> Any:
         if self._key_loader is not None:
             return self._key_loader(token)
         if self._jwk_client is None:

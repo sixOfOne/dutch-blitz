@@ -40,9 +40,7 @@ def host() -> str:
 def port() -> int:
     raw = os.environ.get("DUTCH_BLITZ_PORT", str(DEFAULT_PORT))
     if not raw.isdigit() or not 1 <= int(raw) <= 65535:
-        raise SystemExit(
-            f"DUTCH_BLITZ_PORT must be an integer from 1 to 65535, got {raw!r}."
-        )
+        raise SystemExit(f"DUTCH_BLITZ_PORT must be an integer from 1 to 65535, got {raw!r}.")
     return int(raw)
 
 
@@ -73,7 +71,7 @@ def frontend_api_from_publishable_key(key: str) -> str | None:
     encoded = ""
     for prefix in ("pk_test_", "pk_live_"):
         if key.startswith(prefix):
-            encoded = key[len(prefix):]
+            encoded = key[len(prefix) :]
             break
     if not encoded:
         return None
@@ -130,11 +128,7 @@ def clerk_browser_config() -> dict:
     publishable = clerk_publishable_key()
     frontend = clerk_frontend_api()
     ready = bool(
-        publishable
-        and clerk_secret_key()
-        and frontend
-        and clerk_issuer()
-        and clerk_jwks_url()
+        publishable and clerk_secret_key() and frontend and clerk_issuer() and clerk_jwks_url()
     )
     if not ready:
         return {"ready": False}
