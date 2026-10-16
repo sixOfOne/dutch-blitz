@@ -1,20 +1,27 @@
 """Persistence: saved rounds, the target, undo, and editing the last round."""
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from app.errors import NotFoundError, ScoringError
-from app.store import GameStore
+from app.store import Game, GameStore
 from app.views import present
 
 OWNER = "user_owner"
 
 
-def _store(tmp_path) -> GameStore:
+def _store(tmp_path: Path) -> GameStore:
     store = GameStore(str(tmp_path / "games.sqlite"))
     store.init()
     return store
+
+
+def _open(store: GameStore, game_id: int, owner: str = OWNER) -> Game:
+    game = store.get_game(game_id, owner)
+    assert game is not None
+    return game
 
 
 def _ids(store: GameStore, game_id: int) -> dict[str, int]:
@@ -84,8 +91,12 @@ def test_eight_players_can_score_and_one_or_nine_cannot(tmp_path):
     assert game is not None
     assert [player.name for player in game.players] == eight
     assert [player.seat for player in game.players] == list(range(1, 9))
-    store.record_round(game_id, {player.id: (index, 0) for index, player in enumerate(game.players)}, owner_id=OWNER)
-    assert store.get_game(game_id, OWNER).status == "active"
+    store.record_round(
+        game_id,
+        {player.id: (index, 0) for index, player in enumerate(game.players)},
+        owner_id=OWNER,
+    )
+    assert _open(store, game_id).status == "active"
 
     with pytest.raises(ScoringError, match="2 to 8"):
         store.create_game([f"P{index}" for index in range(1, 10)], 75, owner_id=OWNER)
@@ -104,7 +115,7 @@ def test_finishing_round_still_stores_the_other_players(tmp_path):
     assert present(game).winners == ["Ada"]
     with pytest.raises(ScoringError, match="finished"):
         store.record_round(game_id, {ids["Ada"]: (1, 0), ids["Bo"]: (1, 0)}, owner_id=OWNER)
-    assert len(store.get_game(game_id, OWNER).rounds) == 1
+    assert len(_open(store, game_id).rounds) == 1
 
 
 def test_partial_round_is_rejected(tmp_path):
@@ -113,7 +124,7 @@ def test_partial_round_is_rejected(tmp_path):
     ids = _ids(store, game_id)
     with pytest.raises(ScoringError, match="every player"):
         store.record_round(game_id, {ids["Ada"]: (1, 0)}, owner_id=OWNER)
-    assert store.get_game(game_id, OWNER).rounds == []
+    assert _open(store, game_id).rounds == []
 
 
 def test_undo_reopens_a_finished_game_and_round_numbers_continue(tmp_path):
@@ -122,7 +133,7 @@ def test_undo_reopens_a_finished_game_and_round_numbers_continue(tmp_path):
     ids = _ids(store, game_id)
     store.record_round(game_id, {ids["Ada"]: (1, 0), ids["Bo"]: (1, 0)}, owner_id=OWNER)
     store.record_round(game_id, {ids["Ada"]: (12, 0), ids["Bo"]: (0, 0)}, owner_id=OWNER)
-    assert store.get_game(game_id, OWNER).status == "finished"
+    assert _open(store, game_id).status == "finished"
 
     game = store.undo_last_round(game_id, owner_id=OWNER)
     assert game.status == "active"
@@ -150,21 +161,27 @@ def test_edit_last_round_can_reopen_or_finish_the_game(tmp_path):
     game_id = store.create_game(["Ada", "Bo"], 10, owner_id=OWNER)
     ids = _ids(store, game_id)
     store.record_round(game_id, {ids["Ada"]: (12, 0), ids["Bo"]: (0, 0)}, owner_id=OWNER)
-    assert store.get_game(game_id, OWNER).status == "finished"
+    assert _open(store, game_id).status == "finished"
 
-    game = store.replace_last_round(game_id, {ids["Ada"]: (3, 0), ids["Bo"]: (0, 0)}, owner_id=OWNER)
+    game = store.replace_last_round(
+        game_id, {ids["Ada"]: (3, 0), ids["Bo"]: (0, 0)}, owner_id=OWNER
+    )
     assert game.status == "active"
     assert game.rounds[0].number == 1
     assert [entry.score for entry in game.rounds[0].entries] == [3, 0]
     assert present(game).headline == "Ada leads with 3"
 
-    game = store.replace_last_round(game_id, {ids["Ada"]: (12, 0), ids["Bo"]: (12, 0)}, owner_id=OWNER)
+    game = store.replace_last_round(
+        game_id, {ids["Ada"]: (12, 0), ids["Bo"]: (12, 0)}, owner_id=OWNER
+    )
     assert game.status == "finished"
     assert present(game).winners == ["Ada", "Bo"]
     other_id = store.create_game(["Cy", "Di"], 75, owner_id=OWNER)
     other_ids = _ids(store, other_id)
     with pytest.raises(ScoringError, match="no round to fix"):
-        store.replace_last_round(other_id, {other_ids["Cy"]: (0, 0), other_ids["Di"]: (0, 0)}, owner_id=OWNER)
+        store.replace_last_round(
+            other_id, {other_ids["Cy"]: (0, 0), other_ids["Di"]: (0, 0)}, owner_id=OWNER
+        )
 
 
 def test_missing_game(tmp_path):
@@ -181,7 +198,7 @@ def test_missing_game(tmp_path):
 def test_another_owner_cannot_read_or_change_a_game(tmp_path):
     store = _store(tmp_path)
     game_id = store.create_game(["Ada", "Bo"], 10, owner_id="user_a")
-    ids = {player.name: player.id for player in store.get_game(game_id, "user_a").players}
+    ids = {player.name: player.id for player in _open(store, game_id, "user_a").players}
     store.record_round(game_id, {ids["Ada"]: (4, 0), ids["Bo"]: (1, 0)}, owner_id="user_a")
 
     assert store.list_games("user_b") == []
@@ -189,11 +206,13 @@ def test_another_owner_cannot_read_or_change_a_game(tmp_path):
     with pytest.raises(NotFoundError):
         store.record_round(game_id, {ids["Ada"]: (1, 0), ids["Bo"]: (1, 0)}, owner_id="user_b")
     with pytest.raises(NotFoundError):
-        store.replace_last_round(game_id, {ids["Ada"]: (1, 0), ids["Bo"]: (1, 0)}, owner_id="user_b")
+        store.replace_last_round(
+            game_id, {ids["Ada"]: (1, 0), ids["Bo"]: (1, 0)}, owner_id="user_b"
+        )
     with pytest.raises(NotFoundError):
         store.undo_last_round(game_id, owner_id="user_b")
 
-    game = store.get_game(game_id, "user_a")
+    game = _open(store, game_id, "user_a")
     assert game.owner_id == "user_a"
     assert len(game.rounds) == 1
     assert [entry.score for entry in game.rounds[0].entries] == [4, 1]

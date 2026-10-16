@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, cast
 
 from dutch_blitz_host.backup import BACKUP_STACK, NIGHT_STACK, destroy_plan
 from dutch_blitz_host.dns import wait_for_a_record
@@ -52,11 +53,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Host a Dutch Blitz game night on EC2")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    up = subparsers.add_parser("up", help="Create the bucket if needed, start the instance, configure it, print the URL")
+    up = subparsers.add_parser(
+        "up", help="Create the bucket if needed, start the instance, configure it, print the URL"
+    )
     _add_ssh_key(up)
     _add_init(up)
 
-    apply = subparsers.add_parser("apply", help="Terraform apply the game-night instance (local no-op until enable_aws=true)")
+    apply = subparsers.add_parser(
+        "apply", help="Terraform apply the game-night instance (local no-op until enable_aws=true)"
+    )
     apply.add_argument("--dry-run", action="store_true", help="terraform plan instead of apply")
     _add_init(apply)
 
@@ -64,10 +69,14 @@ def build_parser() -> argparse.ArgumentParser:
         "backup-apply",
         help="Terraform apply the durable S3 backup bucket (not destroyed by down)",
     )
-    backup_apply.add_argument("--dry-run", action="store_true", help="terraform plan instead of apply")
+    backup_apply.add_argument(
+        "--dry-run", action="store_true", help="terraform plan instead of apply"
+    )
     _add_init(backup_apply)
 
-    configure = subparsers.add_parser("configure", help="Ansible: install the app, Caddy, and restore the latest backup")
+    configure = subparsers.add_parser(
+        "configure", help="Ansible: install the app, Caddy, and restore the latest backup"
+    )
     configure.add_argument("--dry-run", action="store_true", help="print the Ansible command only")
     _add_ssh_key(configure)
 
@@ -212,9 +221,9 @@ def wait_for_ssh(
     *,
     timeout: float = SSH_WAIT_TIMEOUT_SECONDS,
     interval: float = SSH_WAIT_INTERVAL_SECONDS,
-    run=subprocess.run,
-    sleep=time.sleep,
-    clock=time.monotonic,
+    run: Any = subprocess.run,
+    sleep: Any = time.sleep,
+    clock: Any = time.monotonic,
 ) -> bool:
     """Retry an SSH login until it succeeds or ``timeout`` seconds pass.
 
@@ -313,14 +322,14 @@ def _secret_values(env: dict[str, str]) -> list[str]:
     return values
 
 
-def terraform_outputs(tf_dir: Path) -> dict:
+def terraform_outputs(tf_dir: Path) -> dict[str, Any]:
     raw = subprocess.check_output(
         [_terraform(), "output", "-json"],
         cwd=str(tf_dir),
         text=True,
         stderr=subprocess.PIPE,
     )
-    return json.loads(raw)
+    return cast(dict[str, Any], json.loads(raw))
 
 
 def output_value(outputs: dict, name: str) -> str | None:
@@ -441,7 +450,7 @@ def _dns_ready(tfvars: dict[str, str], *, hostname: str, public_ip: str, dry_run
     zone = tfvars.get("dns_zone_name", "")
     if not zone.strip():
         return True
-    record_name = tfvars["dns_record_name"] if "dns_record_name" in tfvars else None
+    record_name = tfvars.get("dns_record_name")
     try:
         fqdn = dns_fqdn(zone, record_name)
     except ValueError as exc:
@@ -514,7 +523,9 @@ def cmd_up(*, do_init: bool, ssh_key: str) -> int:
     return 0
 
 
-def describe_instance_state(instance_id: str, region: str, *, run=subprocess.run) -> tuple[str | None, bool]:
+def describe_instance_state(
+    instance_id: str, region: str, *, run: Any = subprocess.run
+) -> tuple[str | None, bool]:
     """Read one instance's state. A missing AWS CLI is "could not tell"."""
     if shutil.which("aws") is None:
         return None, True

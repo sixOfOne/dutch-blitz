@@ -86,6 +86,7 @@ variable "dns_record_name" {
   default     = "blitz"
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "acme_email" {
   description = "Optional email for Let's Encrypt expiry notices. Leave empty to omit it."
   type        = string
@@ -115,6 +116,7 @@ variable "alert_email" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "idle_warn_minutes" {
   description = "Minutes without an HTTP request before the idle warning email. Must be less than idle_shutdown_minutes."
   type        = number
@@ -137,6 +139,7 @@ variable "idle_shutdown_minutes" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "uptime_warn_minutes" {
   description = "Minutes since boot before the uptime warning, unless a snooze moved the deadline. Must be less than uptime_shutdown_minutes. Default 7 hours."
   type        = number
@@ -159,6 +162,7 @@ variable "uptime_shutdown_minutes" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "idle_snooze_minutes" {
   description = "Minutes added to the uptime deadline by `sudo /usr/local/bin/dutch-blitz-idle snooze`. Each run adds this many. It does not reset the idle clock."
   type        = number
@@ -170,6 +174,7 @@ variable "idle_snooze_minutes" {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "idle_check_minutes" {
   description = "How often the on-server timer looks at idle and uptime. Default 15. A limit can be this late."
   type        = number

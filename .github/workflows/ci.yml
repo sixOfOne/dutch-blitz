@@ -1,9 +1,10 @@
 # Continuous integration for the Dutch Blitz scorekeeper.
 #
 # GitHub Actions reads this file and runs the jobs on a clean Ubuntu
-# machine. The jobs install the repo's Python requirements, run pytest,
-# and check Terraform and Ansible. They do not receive Clerk keys or
-# AWS credentials, and they never plan or apply infrastructure.
+# machine. The jobs install the repo's Python requirements, run ruff,
+# mypy, and pytest, and check Terraform (fmt, tflint, validate) and
+# Ansible. They do not receive Clerk keys or AWS credentials, and they
+# never plan or apply infrastructure.
 
 name: CI
 
@@ -54,15 +55,25 @@ concurrency:
 jobs:
   # Separate job from infra so a test failure and an infrastructure
   # failure show up as two checks on the pull request. They run at the
-  # same time. A third job is not worth another machine: Terraform and
-  # Ansible share this one.
+  # same time. A third job is not worth another machine: ruff and mypy
+  # share this one with pytest, and tflint shares the infra machine.
+  # The check names stay "Python tests" and "Terraform and Ansible"
+  # so an existing ruleset does not have to be edited.
   tests:
     name: Python tests
+    # runs-on picks the machine. ubuntu-latest is a new GitHub-hosted
+    # Ubuntu VM for this job. Nothing from a previous run is on it.
     runs-on: ubuntu-latest
     # Stop a stuck install well before the default six-hour job limit.
     timeout-minutes: 10
 
     steps:
+      # A step is one thing the job does, in order.
+      # `uses` downloads an action (someone else's program) pinned to a
+      # commit. `run` is a shell command on this machine. Checkout is
+      # `uses` because cloning is already written. pytest is `run`
+      # because it is a command we type ourselves.
+      #
       # Clone the commit that triggered the run. The default fetch is
       # only that commit, which is all the later steps need.
       - name: Check out the repository
@@ -85,6 +96,19 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+
+      # ruff check is the linter. ruff format --check fails when a file
+      # is not in the layout from pyproject.toml. Neither one runs the app.
+      - name: Ruff lint
+        run: ruff check app src tests
+
+      - name: Ruff format check
+        run: ruff format --check app src tests
+
+      # mypy reads [tool.mypy] in pyproject.toml. It type-checks app/,
+      # src/dutch_blitz_host, and tests. It does not execute them.
+      - name: Mypy
+        run: mypy
 
       # tests/fakes.py stubs Clerk. This step has no secrets, and the
       # suite does not call AWS. pytest.ini points Python at the repo
@@ -122,6 +146,30 @@ jobs:
       # download.
       - name: Check Terraform formatting
         run: terraform fmt -check -diff -recursive
+
+      # tflint is a separate program from Terraform. setup-tflint
+      # installs the v0.64.0 binary. The action itself is pinned to a
+      # commit, with the release tag in the comment, so Dependabot
+      # (the github-actions entry) can bump it. .tflint.hcl enables
+      # the recommended Terraform rules and the AWS ruleset. deep_check
+      # stays off: those rules call AWS, and this job has no credentials.
+      # --init downloads the AWS plugin. The cache key is the config
+      # file, so a plugin version bump downloads again.
+      - name: Set up tflint
+        uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.64.0
+
+      - name: Restore tflint plugin cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.tflint.d/plugins
+          key: tflint-plugins-${{ hashFiles('.tflint.hcl') }}
+
+      - name: Run tflint
+        run: |
+          tflint --init
+          tflint --recursive --config="${{ github.workspace }}/.tflint.hcl"
 
       # The AWS provider archive is large. Every root below uses
       # hashicorp/aws and hashicorp/null, so one cache directory serves

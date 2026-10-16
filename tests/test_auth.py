@@ -7,6 +7,7 @@ import time
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from fastapi.testclient import TestClient
 
 from app.auth import ClerkTokenVerifier
@@ -160,6 +161,7 @@ def test_dev_bypass_is_one_shared_account_and_hides_clerk(monkeypatch, tmp_path)
 
 def _player_ids(html: str) -> tuple[str, str]:
     import re
+
     ids = re.findall(r'name="dutch_(\d+)"', html)
     assert len(ids) >= 2
     return ids[0], ids[1]
@@ -169,9 +171,9 @@ def _private_key():
     return rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
-def _token(private_key, **overrides) -> str:
+def _token(private_key: RSAPrivateKey, **overrides: object) -> str:
     now = int(time.time())
-    payload = {
+    payload: dict[str, object] = {
         "sub": "user_abc",
         "iss": "https://example.clerk.accounts.dev",
         "exp": now + 120,
@@ -181,18 +183,25 @@ def _token(private_key, **overrides) -> str:
     return jwt.encode(payload, private_key, algorithm="RS256")
 
 
-def _verifier(public_key, **kwargs):
-    calls = []
+def _verifier(
+    public_key: RSAPublicKey,
+    *,
+    jwks_url: str = "https://example.clerk.accounts.dev/.well-known/jwks.json",
+    issuer: str = "https://example.clerk.accounts.dev",
+    secret_key: str = "sk_test_example",
+    authorized_parties: tuple[str, ...] = (),
+) -> tuple[ClerkTokenVerifier, list[str]]:
+    calls: list[str] = []
 
-    def loader(token: str):
+    def loader(token: str) -> RSAPublicKey:
         calls.append(token)
         return public_key
 
     verifier = ClerkTokenVerifier(
-        jwks_url=kwargs.get("jwks_url", "https://example.clerk.accounts.dev/.well-known/jwks.json"),
-        issuer=kwargs.get("issuer", "https://example.clerk.accounts.dev"),
-        secret_key=kwargs.get("secret_key", "sk_test_example"),
-        authorized_parties=kwargs.get("authorized_parties", ()),
+        jwks_url=jwks_url,
+        issuer=issuer,
+        secret_key=secret_key,
+        authorized_parties=authorized_parties,
         key_loader=loader,
     )
     return verifier, calls
@@ -220,7 +229,11 @@ def test_clerk_verifier_rejects_bad_tokens_without_a_network_key_fetch():
     header = jwt.encode({"sub": "user_abc"}, private_key, algorithm="RS256").split(".")[0]
     # Rebuild a token whose header claims alg none. The signature is irrelevant.
     body = jwt.encode(
-        {"sub": "user_abc", "iss": "https://example.clerk.accounts.dev", "exp": int(time.time()) + 60},
+        {
+            "sub": "user_abc",
+            "iss": "https://example.clerk.accounts.dev",
+            "exp": int(time.time()) + 60,
+        },
         private_key,
         algorithm="RS256",
     ).split(".")[1]
@@ -242,7 +255,9 @@ def test_clerk_verifier_rejects_bad_tokens_without_a_network_key_fetch():
 def test_azp_is_checked_only_when_parties_are_configured():
     private_key = _private_key()
     open_verifier, _calls = _verifier(private_key.public_key())
-    assert open_verifier.verify(_token(private_key, azp="https://other.example")).user_id == "user_abc"
+    assert (
+        open_verifier.verify(_token(private_key, azp="https://other.example")).user_id == "user_abc"
+    )
 
     limited, _limited_calls = _verifier(
         private_key.public_key(),
@@ -264,5 +279,6 @@ def test_non_jwt_does_not_ask_for_a_signing_key():
 
 def _b64url(value: dict) -> str:
     import base64
+
     raw = json.dumps(value).encode()
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()

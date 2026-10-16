@@ -1,0 +1,39 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["app", "src", "tests"]
+
+[tool.ruff.lint]
+# Ruff's default rules, plus an explicit ignore for one rule that would
+# change the error type callers already catch. E501 is not a default:
+# the formatter owns line length.
+ignore = ["TRY004"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "dutch_blitz_host", "tests"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+explicit_package_bases = true
+files = ["app", "src/dutch_blitz_host", "tests"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+strict_equality = true
+check_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+show_error_codes = true
+pretty = false
+
+# Application and CLI modules must be fully annotated. Tests are still
+# type-checked (check_untyped_defs). Pytest helpers are left untyped so
+# a test can pass a small fake without a Protocol for every stub.
+[[tool.mypy.overrides]]
+module = ["app.*", "dutch_blitz_host.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true

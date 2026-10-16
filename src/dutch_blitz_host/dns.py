@@ -24,6 +24,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
+from typing import Any, Protocol
 
 PUBLIC_RESOLVERS = ("1.1.1.1", "8.8.8.8")
 DNS_WAIT_TIMEOUT_SECONDS = 180
@@ -40,6 +42,12 @@ _BENCHMARK = ipaddress.ip_network("198.18.0.0/15")
 
 class DnsTruncated(OSError):
     """The UDP answer set the TC bit."""
+
+
+class DnsClient(Protocol):
+    def a_records(self, name: str, server: str, *, recursive: bool = ...) -> list[str]: ...
+
+    def ns_records(self, zone: str, server: str) -> list[str]: ...
 
 
 def answers_unusable(records: list[str] | None) -> bool:
@@ -214,7 +222,7 @@ def a_records_from_doh(payload: object) -> list[str]:
 def doh_a_records(
     hostname: str,
     *,
-    fetch,
+    fetch: Callable[[str, float], object],
     timeout: float = _QUERY_TIMEOUT_SECONDS,
 ) -> list[str] | None:
     """A records from dns.google, or Cloudflare when that request fails.
@@ -249,7 +257,7 @@ def _dns_name(value: str) -> str:
     return value.strip().rstrip(".").lower()
 
 
-def _aws_json(argv: list[str], run) -> dict | None:
+def _aws_json(argv: list[str], run: Any) -> dict[str, Any] | None:
     try:
         completed = run(argv, capture_output=True, text=True, check=False)
     except OSError:
@@ -265,7 +273,7 @@ def _aws_json(argv: list[str], run) -> dict | None:
     return payload
 
 
-def _route53_zone_id(zone: str, run) -> str | None:
+def _route53_zone_id(zone: str, run: Any) -> str | None:
     payload = _aws_json(
         ["aws", "route53", "list-hosted-zones-by-name", "--dns-name", zone, "--output", "json"],
         run,
@@ -287,8 +295,8 @@ def _route53_zone_id(zone: str, run) -> str | None:
     return None
 
 
-def _route53_record_sets(zone_id: str, run) -> list[dict] | None:
-    records: list[dict] = []
+def _route53_record_sets(zone_id: str, run: Any) -> list[dict[str, Any]] | None:
+    records: list[dict[str, Any]] = []
     start_name = ""
     start_type = ""
     for _ in range(20):
@@ -302,7 +310,9 @@ def _route53_record_sets(zone_id: str, run) -> list[dict] | None:
             "json",
         ]
         if start_name:
-            argv.extend(["--start-record-name", start_name, "--start-record-type", start_type or "A"])
+            argv.extend(
+                ["--start-record-name", start_name, "--start-record-type", start_type or "A"]
+            )
         payload = _aws_json(argv, run)
         if payload is None:
             return None
@@ -318,7 +328,7 @@ def _route53_record_sets(zone_id: str, run) -> list[dict] | None:
     return records
 
 
-def a_records_from_route53(hostname: str, record_sets: list[dict]) -> list[str]:
+def a_records_from_route53(hostname: str, record_sets: list[dict[str, Any]]) -> list[str]:
     """A values for ``hostname`` in a ListResourceRecordSets page."""
     wanted = _dns_name(hostname)
     values: list[str] = []
@@ -338,7 +348,7 @@ def route53_a_records(
     hostname: str,
     zone: str,
     *,
-    run=subprocess.run,
+    run: Any = subprocess.run,
 ) -> list[str] | None:
     """A record from Route 53, or None when the lookup cannot be done.
 
@@ -365,12 +375,12 @@ def wait_for_a_record(
     timeout: float = DNS_WAIT_TIMEOUT_SECONDS,
     interval: float = DNS_WAIT_INTERVAL_SECONDS,
     public_resolvers: tuple[str, ...] = PUBLIC_RESOLVERS,
-    client: object | None = None,
-    sleep=time.sleep,
-    clock=time.monotonic,
+    client: DnsClient | None = None,
+    sleep: Callable[[float], object] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
     mode: str | None = None,
-    doh_fetch=None,
-    route53_lookup=None,
+    doh_fetch: Callable[[str, float], object] | None = None,
+    route53_lookup: Callable[..., list[str] | None] | None = None,
 ) -> bool:
     """Poll until the name is ``expected_ip``.
 
@@ -414,7 +424,7 @@ def _print_doh_ready(hostname: str, expected_ip: str, attempt: int, confirmed: b
 
 
 def _classic_status(
-    client: object,
+    client: DnsClient,
     hostname: str,
     expected_ip: str,
     zone: str,
@@ -457,7 +467,13 @@ def _classic_status(
     return "match"
 
 
-def _doh_ready(hostname: str, expected_ip: str, zone: str, fetch, route53_lookup) -> tuple[bool, bool]:
+def _doh_ready(
+    hostname: str,
+    expected_ip: str,
+    zone: str,
+    fetch: Callable[[str, float], object],
+    route53_lookup: Callable[..., list[str] | None],
+) -> tuple[bool, bool]:
     records = doh_a_records(hostname, fetch=fetch)
     if records is None or not a_records_match(records, expected_ip):
         return False, False
@@ -472,7 +488,9 @@ def _doh_ready(hostname: str, expected_ip: str, zone: str, fetch, route53_lookup
     return True, True
 
 
-def _authoritative_ips(client: object, zone: str, public_resolvers: tuple[str, ...]) -> list[str]:
+def _authoritative_ips(
+    client: DnsClient, zone: str, public_resolvers: tuple[str, ...]
+) -> list[str]:
     for resolver in public_resolvers:
         try:
             names = client.ns_records(zone, resolver)
@@ -489,7 +507,7 @@ def _authoritative_ips(client: object, zone: str, public_resolvers: tuple[str, .
     return []
 
 
-def _safe_a(client: object, name: str, server: str, *, recursive: bool) -> list[str] | None:
+def _safe_a(client: DnsClient, name: str, server: str, *, recursive: bool) -> list[str] | None:
     try:
         return client.a_records(name, server, recursive=recursive)
     except OSError:
