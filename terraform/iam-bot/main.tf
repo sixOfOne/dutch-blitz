@@ -96,6 +96,7 @@ locals {
     "DeleteTaggedGameInstanceAndSecurityGroup",
     "ManageRulesOnTaggedGameSecurityGroup",
     "TagGameNightResources",
+    "SetShutdownBehaviorOnTaggedGameInstance",
     "ReadGameInstanceProfile",
     "PassGameRoleToEc2Only",
   ])

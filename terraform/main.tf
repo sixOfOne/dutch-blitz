@@ -306,9 +306,13 @@ resource "aws_instance" "game" {
   # The instance role is not granted ec2:StopInstances or
   # ec2:TerminateInstances. It cannot turn some other instance off. This
   # attribute is a RunInstances parameter, so a new night gets it at
-  # launch. Changing it on an instance that is already running is
-  # ModifyInstanceAttribute, which the bot is not allowed to call. down
-  # that night with your own credentials, then up.
+  # launch. AWS provider v6 also calls ModifyInstanceAttribute after
+  # RunInstances to set the same value. The bot may make that one call,
+  # and only that call: instanceInitiatedShutdownBehavior, on an instance
+  # tagged Project=dutch-blitz, in this region. Other attributes,
+  # including instance type and user data, stay denied. An apply that
+  # fails on that call taints the instance. down still looks it up by
+  # the Project tag and uploads the final snapshot before destroy.
   #
   # After a self-terminate, Terraform state and the blitz A record still
   # describe the dead instance until the next down or up. down skips the

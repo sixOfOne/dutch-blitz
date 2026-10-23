@@ -26,9 +26,10 @@ backups/
 *.db
 *.bak
 
-# Terraform (keep terraform.tfvars.example tracked)
+# Terraform (keep terraform.tfvars.example tracked).
+# .terraform.lock.hcl is committed for each root (linux_amd64, darwin_arm64,
+# darwin_amd64). Dependabot's terraform entry updates those lock files.
 .terraform/
-.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 crash.log

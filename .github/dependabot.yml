@@ -73,21 +73,23 @@ updates:
           - "minor"
           - "patch"
 
-  # terraform: provider versions in required_providers.
+  # terraform: provider versions in required_providers, and the
+  # .terraform.lock.hcl committed in each root.
   #
-  # Dependabot looks at the .tf files in each directory you list. It
-  # does not walk into subdirectories on its own, so each root is
-  # named below. All five declare hashicorp/aws and hashicorp/null.
-  # Listing them on one entry means the open-pull-request cap and the
-  # minor/patch group apply once, across every root, instead of five
-  # separate queues.
+  # Dependabot looks at the .tf files and the lock file in each
+  # directory you list. It does not walk into subdirectories on its
+  # own, so each root is named below. All five declare hashicorp/aws
+  # and hashicorp/null. Listing them on one entry means the
+  # open-pull-request cap and the minor/patch group apply once,
+  # across every root, instead of five separate queues.
   #
-  # These roots have no .terraform.lock.hcl committed. The version
-  # lines are pessimistic constraints (~> 5.0 allows any 5.x). A new
-  # 5.x provider release does not change that line, so it does not
-  # open a pull request. A release that falls outside the constraint,
-  # such as a 6.0 provider, does. That one is a major update and stays
-  # its own pull request.
+  # Each root commits .terraform.lock.hcl, generated for linux_amd64,
+  # darwin_arm64, and darwin_amd64. A new provider release inside the
+  # pessimistic constraint updates that lock file, so Dependabot opens
+  # a pull request for it. A release outside the constraint, such as a
+  # 7.0 provider, also changes the version line. That one is a major
+  # update and stays its own pull request. The version lines stay
+  # pessimistic (~> 6.68 in terraform/backup, ~> 6.69 in the other roots).
   - package-ecosystem: "terraform"
     directories:
       # Game-night instance and the blitz DNS record. down destroys this.

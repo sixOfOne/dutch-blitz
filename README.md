@@ -54,7 +54,7 @@ Two checks run in parallel. The names are the job names, so a ruleset that alrea
 
 A newer push to the same branch cancels the run that is still going, so an outdated commit does not spend the rest of its minutes.
 
-Run the same checks from the repository root. Terraform 1.10 or newer is required, because the S3 backend locks state with `use_lockfile` (CI uses 1.16.5).
+Run the same checks from the repository root. Terraform 1.10 or newer is required, because the S3 backend locks state with `use_lockfile` (CI uses 1.16.5). Each root commits `.terraform.lock.hcl` for linux_amd64, darwin_arm64, and darwin_amd64. `terraform init` installs the locked providers. Dependabot's terraform entry updates those lock files when a release is inside the version constraint.
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
@@ -150,7 +150,7 @@ GitHub's documentation disagrees with itself about the first publish. The Action
 
 A night is one `t3.small` in `us-east-2` (Amazon Linux 2023) for a few hours, then the instance is deleted. Scores are copied to an S3 bucket that stays. Three hours is about **$0.10**: the instance is about $0.021 an hour, and the disk and a small SQLite upload add a few cents. The bucket is pennies a month and is not part of that teardown.
 
-From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.10 or newer. No extra Python package is required. The controller uses the standard library. 1.10 is the first release that locks S3 state with `use_lockfile`. CI uses 1.16.5. The host does not install the app with Ansible. Cloud-init pulls a published image.
+From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.10 or newer. No extra Python package is required. The controller uses the standard library. 1.10 is the first release that locks S3 state with `use_lockfile`. CI uses 1.16.5. The computer that runs `up`, `configure`, `backup`, and `down` also needs an OpenSSH `ssh` client on `PATH`. Those commands shell out to `ssh` to reach `ec2-user` on the instance. The host does not install the app with Ansible. Cloud-init pulls a published image.
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
@@ -217,7 +217,7 @@ After a self-terminate, the blitz A record and the game-night Terraform state st
 
 The check can be up to `idle_check_minutes` late (default 15). Change the numbers in `terraform/terraform.tfvars`, then run `configure` on a host that is already up, or let the next `up` install them. `configure` rewrites `/etc/dutch-blitz/idle.env` and the timer. `up` does not apply `terraform/game-role`.
 
-A night that is already running when this is first applied does not yet have the timer, and it does not yet terminate on shutdown. `down` it, apply `terraform/game-role`, confirm the email, then `up`. The bot cannot change shutdown behavior on a running instance (`ec2:ModifyInstanceAttribute` is not in its policy). The next launch sends the setting with `RunInstances`.
+A night that is already running when this is first applied does not yet have the timer, and it does not yet terminate on shutdown. `down` it, apply `terraform/game-role`, confirm the email, then `up`. AWS provider v6 calls `ec2:ModifyInstanceAttribute` after `RunInstances` to set `instanceInitiatedShutdownBehavior`, so the bot policy allows that one attribute on instances tagged `Project=dutch-blitz`. It does not allow an instance-type change. If apply fails on that call, the instance is tainted and the blitz record was not created. `down` still finds it by the `Project` tag and uploads the final snapshot before destroy. Details are in [docs/bot-iam.md](docs/bot-iam.md).
 
 Owner steps after this change is merged, with your own credentials:
 
@@ -230,7 +230,7 @@ terraform -chdir=terraform/game-role apply -var-file=../terraform.tfvars
 ```
 
 3. Open the AWS confirmation message and confirm the subscription. Until you do, publishes succeed and no mail arrives.
-4. Do not re-apply `terraform/iam-bot` for this change. The bot policy is unchanged. `up` and `down` do not call SNS. `down` uses `ec2:DescribeInstances`, which the bot already has. Details are in [docs/bot-iam.md](docs/bot-iam.md).
+4. Do not re-apply `terraform/iam-bot` only because the idle timer landed. That change did not add SNS to the bot policy. `up` and `down` do not call SNS. `down` uses `ec2:DescribeInstances`, which the bot already has. Re-apply `terraform/iam-bot` when the bot policy JSON changes. The shutdown-behavior allow is one of those changes: until that apply, the bot's `up` fails on `ec2:ModifyInstanceAttribute` and leaves the instance tainted. Details are in [docs/bot-iam.md](docs/bot-iam.md).
 
 Cloud-init installs the timer. The topic name on the host is `<name_prefix>-idle`. The host builds the ARN from that name, the region, and the account id in the instance metadata. The account id is not in git.
 
