@@ -191,6 +191,12 @@ def test_iam_bot_renders_with_templatefile_and_rejects_leftover_fragments():
     assert 'strcontains(local.bot_policy_json, "000000000000")' in iam
     assert 'strcontains(local.bot_policy_json, "replace-me")' in iam
     assert "!var.enable_aws" in iam
+    # description is ForceNew. The applied sentence stays so a plan updates
+    # the document in place. SSM is in the policy JSON, not this string.
+    assert (
+        'description = "EC2 and PassRole for the pre-existing game role, '
+        'for dutch_blitz_host up and down."' in iam
+    )
 
 
 def test_bot_policy_is_split_under_the_managed_policy_quota():

@@ -237,9 +237,13 @@ resource "null_resource" "bot_checks" {
 }
 
 resource "aws_iam_policy" "compute" {
-  count       = var.enable_aws ? 1 : 0
-  name        = "${var.bot_user_name}-compute"
-  description = "EC2, SSM Run Command, and PassRole for the pre-existing game role, for dutch_blitz_host up and down."
+  count = var.enable_aws ? 1 : 0
+  name  = "${var.bot_user_name}-compute"
+  # description is ForceNew. This sentence is already applied, so a
+  # change replaces the policy and its ARN. SSM Run Command is in the
+  # document (SendCommandToTaggedGameInstance, SendCommandWithRunShellScript,
+  # ReadSsmCommandResults), not in this sentence.
+  description = "EC2 and PassRole for the pre-existing game role, for dutch_blitz_host up and down."
   policy      = local.compute_policy_json
 
   tags = {
