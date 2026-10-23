@@ -2,7 +2,7 @@
 
 The files in this repository (`.github/dependabot.yml`, the pinned actions in `.github/workflows/ci.yml`, and `SECURITY.md`) are only half of the setup. The other half is a set of switches on GitHub's website. Those switches are not stored in git, and merging a pull request does not flip them.
 
-Sign in as the owner of [sixOfOne/dutch-blitz](https://github.com/sixOfOne/dutch-blitz) and work through the four sections below once. Each section says what to click and what that switch protects against.
+Sign in as the owner of [sixOfOne/dutch-blitz](https://github.com/sixOfOne/dutch-blitz) and work through the sections below once. Each section says what to click and what that switch protects against.
 
 ## 1. Protect `main`
 
@@ -111,3 +111,24 @@ It protects against a public bug report that includes how to exploit the bug. Si
 2. Next to **Private vulnerability reporting**, click **Enable**.
 
 Confirm the form exists: open the **Security and quality** tab, then **Advisories**. You should see a way to report a vulnerability. The text from `SECURITY.md` is shown above the form.
+
+## 5. The `game-night` environment
+
+The Game night workflow runs only when someone clicks **Run workflow**, and only after a required reviewer approves that run. The reviewer, the role ARN, and the secrets are settings on the environment. They are not in git. Merging the workflow file does not create them.
+
+Create the environment yourself before the first run. If the first run creates `game-night` for you, that run is not reviewed.
+
+The workflow assumes `dutch-blitz-gha-deployer` with GitHub's OIDC token. `AWS_ROLE_ARN` is an environment variable, not a secret. There is no stored AWS access key. The role's permissions are the two bot policies, so a run can do what `up` and `down` can do, including root commands on instances tagged `Project=dutch-blitz`. The trust policy is what limits who can assume it: the subject is exactly `repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night`, `aud` is `sts.amazonaws.com`, `event_name` is `workflow_dispatch`, `ref` is `refs/heads/main`, and `workflow_ref` is this workflow file on `main`. This repository was created on 2026-10-10 and GitHub sets `use_immutable_subject`, so the token carries those ids. A pull request workflow cannot assume the role.
+
+Do these steps in order, after `terraform/gha-deployer` is applied with your own credentials. The apply commands are in the README and in [bot-iam.md](bot-iam.md).
+
+1. Confirm `terraform/iam-bot` is already applied, so `grok-bot-dutch-blitz-compute` and `grok-bot-dutch-blitz-records` exist.
+2. Copy `terraform/gha-deployer/terraform.tfvars.example` to `terraform/gha-deployer/terraform.tfvars`. Set `enable_aws = true`. Set `github_oidc_provider_arn` if the account already has a provider for `token.actions.githubusercontent.com` (`aws iam list-open-id-connect-providers`). Leave it empty to create the provider. Leave `bot_user_name` unless the bot user was renamed.
+3. `terraform -chdir=terraform/gha-deployer init -backend-config=../backend.hcl`, then `terraform -chdir=terraform/gha-deployer apply -var-file=terraform.tfvars`. Read `role_arn`.
+4. **Settings → Environments → New environment**. Name it exactly `game-night`.
+5. Turn on **Required reviewers** and add yourself. Save before any workflow run.
+6. Under **Deployment branches and tags**, choose **Selected branches** and add `main`.
+7. Add an environment **variable** named `AWS_ROLE_ARN`. Paste the `role_arn`. Do not put that ARN in a secret.
+8. Add environment **secrets** `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `TERRAFORM_TFVARS`, and `BACKEND_HCL`. `TERRAFORM_TFVARS` is the body of the gitignored `terraform/terraform.tfvars`, without Clerk keys and without `app_image`. `BACKEND_HCL` is the body of the gitignored `terraform/backend.hcl`. The workflow writes those two files in the runner temp directory and does not echo them.
+9. **Actions → Game night → Run workflow**. Choose branch `main` and action `status`. Approve the pending deployment. Then run `up`, `backup`, or `down` the same way. The concurrency group is `game-night` and a second run waits. The role session is one hour.
+

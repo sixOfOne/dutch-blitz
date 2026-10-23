@@ -17,6 +17,7 @@ ROOTS = (
     "terraform/state",
     "terraform/iam-bot",
     "terraform/game-role",
+    "terraform/gha-deployer",
 )
 
 # Actions the bot must not have. A later edit that adds one should fail here

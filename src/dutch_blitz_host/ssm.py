@@ -136,6 +136,22 @@ def wait_for_ssm_online(
         sleep(interval)
 
 
+def describe_ping_status(
+    instance_id: str,
+    region: str,
+    *,
+    client: Any | None = None,
+) -> str | None:
+    """Return ``PingStatus`` for one instance, or None when it is absent.
+
+    ``status`` uses this. It does not send a command and it does not
+    print command history.
+    """
+    target = _require_instance(instance_id)
+    ssm = client if client is not None else ssm_client(region)
+    return _ping_status(ssm, target)
+
+
 def _ping_status(client: Any, instance_id: str) -> str | None:
     response = client.describe_instance_information(
         InstanceInformationFilterList=[

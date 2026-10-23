@@ -79,10 +79,11 @@ updates:
   #
   # Dependabot looks at the .tf files and the lock file in each
   # directory you list. It does not walk into subdirectories on its
-  # own, so each root is named below. All five declare hashicorp/aws
-  # and hashicorp/null. Listing them on one entry means the
+  # own, so each root is named below. All six declare hashicorp/aws
+  # and hashicorp/null. terraform/gha-deployer also declares
+  # hashicorp/tls. Listing them on one entry means the
   # open-pull-request cap and the minor/patch group apply once,
-  # across every root, instead of five separate queues.
+  # across every root, instead of six separate queues.
   #
   # Each root commits .terraform.lock.hcl, generated for linux_amd64,
   # darwin_arm64, and darwin_amd64. A new provider release inside the
@@ -103,6 +104,8 @@ updates:
       - "/terraform/iam-bot"
       # Instance role and instance profile. You apply this; down does not.
       - "/terraform/game-role"
+      # GitHub OIDC deployer role for the Game night workflow. You apply this.
+      - "/terraform/gha-deployer"
     schedule:
       interval: "weekly"
       day: "monday"
