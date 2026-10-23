@@ -118,6 +118,19 @@
       }
     },
     {
+      "Sid": "SetShutdownBehaviorOnTaggedGameInstance",
+      "Effect": "Allow",
+      "Action": "ec2:ModifyInstanceAttribute",
+      "Resource": "arn:aws:ec2:${aws_region}:${aws_account_id}:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${aws_region}",
+          "aws:ResourceTag/Project": "dutch-blitz",
+          "ec2:Attribute": "instanceInitiatedShutdownBehavior"
+        }
+      }
+    },
+    {
       "Sid": "ReadGameInstanceProfile",
       "Effect": "Allow",
       "Action": "iam:GetInstanceProfile",

@@ -27,10 +27,21 @@ from dutch_blitz_host.dns import wait_for_a_record
 from dutch_blitz_host.envfile import assert_deployable, merged_env, redact
 from dutch_blitz_host.hostname import dns_fqdn, https_origin
 from dutch_blitz_host.instance_status import (
+    PROJECT_TAG_VALUE,
+    FinalBackup,
+    LiveInstance,
+    StateGameInstance,
     describe_instances_argv,
+    describe_instances_by_id_argv,
+    describe_tagged_game_instances_argv,
+    game_name_tag,
     parse_describe_instances,
+    parse_described_instances,
+    parse_game_instance_show,
+    pick_tagged_instance,
     should_skip_ssh_backup,
     valid_instance_id,
+    valid_public_ipv4,
     valid_region,
 )
 
@@ -381,9 +392,20 @@ def night_terraform_env() -> dict[str, str] | None:
     return clerk_terraform_env(env)
 
 
-def cmd_backup(*, ssh_key: str, dry_run: bool) -> int:
-    outputs = terraform_outputs(NIGHT_DIR)
-    ip, _hostname, _bucket = require_aws_outputs(outputs)
+def cmd_backup(*, ssh_key: str, dry_run: bool, host: str | None = None) -> int:
+    """Upload a snapshot over SSH.
+
+    ``host`` is the public IP to use when Terraform outputs have none,
+    which is what a tainted create leaves behind. The address has to be
+    an IPv4 literal. It is not taken from a free-form string in argv.
+    """
+    if host is not None:
+        if not valid_public_ipv4(host):
+            raise SystemExit(f"Refusing SSH backup to unexpected host {host!r}.")
+        ip = host
+    else:
+        outputs = terraform_outputs(NIGHT_DIR)
+        ip, _hostname, _bucket = require_aws_outputs(outputs)
     key = Path(ssh_key).expanduser()
     cmd = backup_ssh_argv(ip, key)
     print("Backup:", _fmt(cmd))
@@ -610,29 +632,237 @@ def describe_instance_state(
     return parse_describe_instances(stdout, stderr, completed.returncode)
 
 
-def instance_already_gone(tfvars: dict[str, str]) -> tuple[bool, str]:
-    """Whether ``down`` should skip SSH because the host already terminated.
+def game_instance_from_state(tf_dir: Path = NIGHT_DIR) -> tuple[StateGameInstance | None, bool]:
+    """Read ``aws_instance.game`` from ``terraform show -json``.
 
-    Returns ``(gone, detail)``. ``gone`` is false when describe fails or
-    the id looks wrong. Those cases still try SSH, so a blip does not
-    destroy a night whose latest scores never reached S3.
+    Returns ``(instance, read_failed)``. ``(None, False)`` means state
+    was read and the resource is absent. The JSON is not printed: user
+    data in that document contains the Clerk keys.
     """
-    outputs = terraform_outputs(NIGHT_DIR)
-    instance_id = output_value(outputs, "instance_id")
-    if not instance_id:
-        return True, "Terraform state has no instance id"
-    if not valid_instance_id(instance_id):
-        return False, f"instance id {instance_id!r} is unexpected; trying the SSH backup"
-    region = tfvars.get("aws_region", "").strip() or "us-east-2"
+    terraform = shutil.which("terraform")
+    if not terraform:
+        return None, True
+    try:
+        raw = subprocess.check_output(
+            [terraform, "show", "-json"],
+            cwd=str(tf_dir),
+            text=True,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError:
+        return None, True
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, True
+    return parse_game_instance_show(document), False
+
+
+def describe_instance_public_ip(
+    instance_id: str, region: str, *, run: Any = subprocess.run
+) -> str | None:
+    """Public IPv4 of one instance, or None when describe cannot say."""
+    if shutil.which("aws") is None:
+        return None
+    completed = run(
+        describe_instances_by_id_argv(instance_id, region),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    instances, failed = parse_described_instances(
+        completed.stdout or "",
+        completed.stderr or "",
+        completed.returncode,
+    )
+    if failed or not instances:
+        return None
+    return instances[0].public_ip
+
+
+def find_instances_by_tag(
+    region: str, *, run: Any = subprocess.run
+) -> tuple[list[LiveInstance], bool]:
+    """DescribeInstances for ``Project=dutch-blitz``.
+
+    Returns ``(instances, describe_failed)``. A missing AWS CLI is a
+    failure, not an empty night. The Name tag is applied later, and only
+    to choose among more than one running instance.
+    """
+    if shutil.which("aws") is None:
+        return [], True
+    completed = run(
+        describe_tagged_game_instances_argv(region),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return parse_described_instances(
+        completed.stdout or "",
+        completed.stderr or "",
+        completed.returncode,
+    )
+
+
+def _night_region(tfvars: dict[str, str]) -> str:
+    return tfvars.get("aws_region", "").strip() or "us-east-2"
+
+
+def _describe_known_instance(
+    instance_id: str,
+    region: str,
+    public_ip: str | None,
+    *,
+    prefix: str,
+) -> FinalBackup:
+    """Describe one id and decide whether SSH still has somewhere to go.
+
+    ``prefix`` is empty for a normal id, or ``"tainted "`` when state
+    marked the object tainted. The host is returned whenever one is
+    known, including an address that came from state rather than outputs.
+    """
     if not valid_region(region):
-        return False, "aws_region is not a region name; trying the SSH backup"
+        return FinalBackup(
+            False,
+            "aws_region is not a region name; trying the SSH backup",
+            public_ip,
+        )
     state, failed = describe_instance_state(instance_id, region)
     if should_skip_ssh_backup(state, describe_failed=failed):
         label = state or "missing"
-        return True, f"{instance_id} is {label}"
+        return FinalBackup(True, f"{instance_id} is {label}")
     if failed:
-        return False, "could not describe the instance; trying the SSH backup"
-    return False, f"instance is {state}"
+        return FinalBackup(
+            False,
+            "could not describe the instance; trying the SSH backup",
+            public_ip,
+        )
+    host = public_ip or describe_instance_public_ip(instance_id, region)
+    noun = f"{prefix}instance"
+    if host and host != public_ip:
+        return FinalBackup(
+            False,
+            f"{noun} {instance_id} is {state}; public IP came from DescribeInstances",
+            host,
+        )
+    if not host:
+        return FinalBackup(
+            False,
+            f"{noun} {instance_id} is {state} but has no public IP. "
+            "The final backup was not uploaded, and the instance was left up.",
+            refuse=True,
+        )
+    return FinalBackup(False, f"{noun} is {state}", host)
+
+
+def _backup_without_output_id(tfvars: dict[str, str], public_ip: str | None) -> FinalBackup:
+    """Outputs have no instance id. State or the Project tag may still name one.
+
+    An empty state really is an empty night: skip SSH and destroy.
+    A tainted or un-id'd ``aws_instance.game`` is not empty. Find the
+    instance and back it up. A describe failure is not proof it is gone.
+    """
+    state_instance, state_failed = game_instance_from_state()
+    region = _night_region(tfvars)
+    if state_instance is not None and state_instance.instance_id:
+        ip = public_ip or state_instance.public_ip
+        prefix = "tainted " if state_instance.tainted else ""
+        return _describe_known_instance(
+            state_instance.instance_id,
+            region,
+            ip,
+            prefix=prefix,
+        )
+
+    if state_instance is None and not state_failed:
+        return FinalBackup(True, "Terraform state has no instance id")
+
+    if not valid_region(region):
+        return FinalBackup(
+            False,
+            "aws_region is not a region name; trying the SSH backup",
+            public_ip,
+        )
+    name_tag = game_name_tag(tfvars.get("name_prefix", ""))
+    tagged, tag_failed = find_instances_by_tag(region)
+    if state_instance is not None and state_instance.tainted:
+        why = "tainted instance has no id"
+    elif state_instance is not None:
+        why = "instance in state has no id"
+    else:
+        why = "Terraform state could not be read"
+    recovered_ip = public_ip
+    if recovered_ip is None and state_instance is not None:
+        recovered_ip = state_instance.public_ip
+    if tag_failed:
+        return FinalBackup(
+            False,
+            f"{why}; could not describe instances by tag; trying the SSH backup",
+            recovered_ip,
+        )
+    choice = pick_tagged_instance(tagged, name_tag=name_tag)
+    if choice.ambiguous:
+        return FinalBackup(
+            False,
+            f"{why}. More than one running instance is tagged "
+            f"Project={PROJECT_TAG_VALUE}. "
+            "The final backup was not uploaded, and the instance was left up.",
+            refuse=True,
+        )
+    if choice.instance is None:
+        if state_failed:
+            return FinalBackup(
+                False,
+                "Terraform state could not be read, and no running instance is tagged "
+                f"Project={PROJECT_TAG_VALUE}. "
+                "The final backup was not uploaded, and the instance was left up.",
+                refuse=True,
+            )
+        return FinalBackup(
+            True,
+            f"{why}, and no running instance is tagged Project={PROJECT_TAG_VALUE}",
+        )
+    if not choice.instance.public_ip:
+        return FinalBackup(
+            False,
+            f"{why}. {choice.instance.instance_id} is {choice.instance.state or 'unknown'} "
+            "but has no public IP. The final backup was not uploaded, and the instance was left up.",
+            refuse=True,
+        )
+    return FinalBackup(
+        False,
+        f"{why}; {choice.instance.instance_id} is {choice.instance.state}, "
+        f"found by tag Project={PROJECT_TAG_VALUE}",
+        choice.instance.public_ip,
+    )
+
+
+def instance_already_gone(tfvars: dict[str, str]) -> FinalBackup:
+    """Whether ``down`` should skip SSH because the host already terminated.
+
+    ``skip`` is false when describe fails or the id looks wrong. Those
+    cases still try SSH, so a blip does not destroy a night whose latest
+    scores never reached S3.
+
+    No id in the outputs is not, by itself, proof the instance is gone.
+    A tainted or un-id'd ``aws_instance.game`` is looked up in state and
+    then by tag before the backup is skipped.
+    """
+    try:
+        outputs = terraform_outputs(NIGHT_DIR)
+    except subprocess.CalledProcessError:
+        outputs = {}
+    instance_id = output_value(outputs, "instance_id")
+    public_ip = output_value(outputs, "public_ip")
+    if instance_id and not valid_instance_id(instance_id):
+        return FinalBackup(
+            False,
+            f"instance id {instance_id!r} is unexpected; trying the SSH backup",
+            public_ip,
+        )
+    if not instance_id:
+        return _backup_without_output_id(tfvars, public_ip)
+    return _describe_known_instance(instance_id, _night_region(tfvars), public_ip, prefix="")
 
 
 def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool) -> int:
@@ -645,6 +875,10 @@ def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool
             "If the instance already terminated itself, down skips the SSH backup "
             "and still removes the blitz DNS record and Terraform state."
         )
+        print(
+            "If state has a tainted or un-id'd instance, down looks it up by the "
+            "Project=dutch-blitz tag and still uploads the final snapshot."
+        )
         print("Dry run only; nothing was destroyed.")
         return 0
     tfvars = load_tfvars()
@@ -653,16 +887,20 @@ def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool
         return 0
     gone = False
     if not skip_backup:
-        gone, detail = instance_already_gone(tfvars)
+        plan = instance_already_gone(tfvars)
+        if plan.refuse:
+            print(plan.detail, file=sys.stderr)
+            return 1
+        gone = plan.skip
         if gone:
             print(
-                f"The instance is already gone ({detail}). Skipping the SSH backup. "
+                f"The instance is already gone ({plan.detail}). Skipping the SSH backup. "
                 "The on-server shutdown uploads a snapshot before it powers off. "
                 "DNS and Terraform state are still removed."
             )
         else:
-            print(f"{detail}. Uploading a final snapshot.")
-            code = cmd_backup(ssh_key=ssh_key, dry_run=False)
+            print(f"{plan.detail}. Uploading a final snapshot.")
+            code = cmd_backup(ssh_key=ssh_key, dry_run=False, host=plan.host)
             if code != 0:
                 print(
                     "Final backup failed, so the instance was left up. "

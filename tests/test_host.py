@@ -56,8 +56,14 @@ from dutch_blitz_host.envfile import (
 )
 from dutch_blitz_host.hostname import dns_fqdn, hostname_for, https_origin
 from dutch_blitz_host.instance_status import (
+    LiveInstance,
+    StateGameInstance,
     describe_instances_argv,
+    describe_tagged_game_instances_argv,
     parse_describe_instances,
+    parse_described_instances,
+    parse_game_instance_show,
+    pick_tagged_instance,
     should_skip_ssh_backup,
 )
 
@@ -869,10 +875,240 @@ def test_down_still_backs_up_when_describe_fails(monkeypatch):
     assert called["backup"] == 1
 
 
+def _running_reservation(instance_id: str, public_ip: str, state: str = "running") -> str:
+    body = {
+        "Reservations": [
+            {
+                "Instances": [
+                    {
+                        "InstanceId": instance_id,
+                        "PublicIpAddress": public_ip,
+                        "State": {"Name": state},
+                    }
+                ]
+            }
+        ]
+    }
+    return json.dumps(body)
+
+
+def test_show_json_keeps_a_tainted_instance_with_no_id():
+    tainted = {
+        "values": {
+            "root_module": {
+                "resources": [
+                    {
+                        "address": "aws_instance.game[0]",
+                        "mode": "managed",
+                        "type": "aws_instance",
+                        "name": "game",
+                        "tainted": True,
+                        "values": {"id": None, "public_ip": ""},
+                    }
+                ]
+            }
+        }
+    }
+    parsed = parse_game_instance_show(tainted)
+    assert parsed == StateGameInstance(None, None, True)
+    identified = parse_game_instance_show(
+        {
+            "values": {
+                "root_module": {
+                    "resources": [
+                        {
+                            "mode": "managed",
+                            "type": "aws_instance",
+                            "name": "game",
+                            "tainted": True,
+                            "values": {
+                                "id": "i-0123456789abcdef0",
+                                "public_ip": "203.0.113.10",
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    assert identified == StateGameInstance("i-0123456789abcdef0", "203.0.113.10", True)
+    assert parse_game_instance_show({"values": {"root_module": {"resources": []}}}) is None
+
+
+def test_tagged_describe_parses_one_live_instance_and_rejects_a_bad_filter():
+    argv = describe_tagged_game_instances_argv("us-east-2")
+    assert argv[:3] == ["aws", "ec2", "describe-instances"]
+    assert "Name=tag:Project,Values=dutch-blitz" in argv
+    assert not any(part.startswith("Name=tag:Name,") for part in argv)
+    instances, failed = parse_described_instances(
+        _running_reservation("i-0123456789abcdef0", "203.0.113.10"),
+        "",
+        0,
+    )
+    assert failed is False
+    assert instances == [LiveInstance("i-0123456789abcdef0", "running", "203.0.113.10")]
+    gone, gone_failed = parse_described_instances(
+        _running_reservation("i-0123456789abcdef0", "203.0.113.10", "terminated"),
+        "",
+        0,
+    )
+    assert gone_failed is False
+    assert pick_tagged_instance(gone).instance is None
+    missing, missing_failed = parse_described_instances(
+        "",
+        "InvalidInstanceID.NotFound",
+        254,
+    )
+    assert missing == [] and missing_failed is False
+    _none, errored = parse_described_instances("", "Unable to locate credentials", 255)
+    assert errored is True
+    choice = pick_tagged_instance(
+        [
+            LiveInstance("i-0123456789abcdef0", "running", "203.0.113.10"),
+            LiveInstance("i-0123456789abcdef1", "running", "203.0.113.11"),
+        ]
+    )
+    assert choice.ambiguous is True and choice.instance is None
+    named = pick_tagged_instance(
+        [
+            LiveInstance("i-0123456789abcdef0", "running", "203.0.113.10", "other"),
+            LiveInstance("i-0123456789abcdef1", "running", "203.0.113.11", "dutch-blitz-game"),
+        ],
+        name_tag="dutch-blitz-game",
+    )
+    assert named.ambiguous is False
+    assert named.instance is not None
+    assert named.instance.instance_id == "i-0123456789abcdef1"
+
+
+def test_down_backs_up_a_tainted_instance_found_by_tag(monkeypatch):
+    monkeypatch.setattr(
+        host_cli, "load_tfvars", lambda: {"enable_aws": "true", "aws_region": "us-east-2"}
+    )
+    monkeypatch.setattr(host_cli, "terraform_outputs", lambda _path: {})
+    monkeypatch.setattr(
+        host_cli,
+        "game_instance_from_state",
+        lambda: (StateGameInstance(None, None, True), False),
+    )
+    monkeypatch.setattr(
+        host_cli,
+        "find_instances_by_tag",
+        lambda _region: (
+            [LiveInstance("i-0123456789abcdef0", "running", "203.0.113.10")],
+            False,
+        ),
+    )
+    seen = {}
+
+    def backup(**kwargs):
+        seen["host"] = kwargs.get("host")
+        return 0
+
+    destroyed = {"called": False}
+
+    def destroy(*_args, **kwargs):
+        destroyed["called"] = kwargs["action"] == "destroy"
+        return 0
+
+    monkeypatch.setattr(host_cli, "cmd_backup", backup)
+    monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    assert (
+        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    )
+    assert seen["host"] == "203.0.113.10"
+    assert destroyed["called"] is True
+
+
+def test_down_uses_the_state_id_when_outputs_have_none(monkeypatch):
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
+    monkeypatch.setattr(host_cli, "terraform_outputs", lambda _path: {})
+    monkeypatch.setattr(
+        host_cli,
+        "game_instance_from_state",
+        lambda: (StateGameInstance("i-0123456789abcdef0", None, True), False),
+    )
+    monkeypatch.setattr(
+        host_cli, "describe_instance_state", lambda *_args, **_kwargs: ("running", False)
+    )
+    monkeypatch.setattr(
+        host_cli,
+        "describe_instance_public_ip",
+        lambda *_args, **_kwargs: "203.0.113.20",
+    )
+    seen = {}
+
+    def backup(**kwargs):
+        seen["host"] = kwargs.get("host")
+        return 0
+
+    monkeypatch.setattr(host_cli, "cmd_backup", backup)
+    monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
+    assert (
+        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    )
+    assert seen["host"] == "203.0.113.20"
+
+
+def test_down_skips_backup_when_state_has_no_instance(monkeypatch, capsys):
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
+    monkeypatch.setattr(
+        host_cli,
+        "terraform_outputs",
+        lambda _path: {"instance_id": {"value": None}},
+    )
+    monkeypatch.setattr(host_cli, "game_instance_from_state", lambda: (None, False))
+
+    def backup(**_kwargs):
+        raise AssertionError("backup")
+
+    monkeypatch.setattr(host_cli, "cmd_backup", backup)
+    monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
+    assert (
+        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
+    )
+    assert "Skipping the SSH backup" in capsys.readouterr().out
+
+
+def test_down_refuses_to_guess_among_tagged_instances(monkeypatch):
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
+    monkeypatch.setattr(host_cli, "terraform_outputs", lambda _path: {})
+    monkeypatch.setattr(
+        host_cli,
+        "game_instance_from_state",
+        lambda: (StateGameInstance(None, None, True), False),
+    )
+    monkeypatch.setattr(
+        host_cli,
+        "find_instances_by_tag",
+        lambda _region: (
+            [
+                LiveInstance("i-0123456789abcdef0", "running", "203.0.113.10"),
+                LiveInstance("i-0123456789abcdef1", "running", "203.0.113.11"),
+            ],
+            False,
+        ),
+    )
+
+    def boom(**_kwargs):
+        raise AssertionError("backup")
+
+    def destroy(*_args, **_kwargs):
+        raise AssertionError("destroyed")
+
+    monkeypatch.setattr(host_cli, "cmd_backup", boom)
+    monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    assert (
+        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 1
+    )
+
+
 def test_down_refuses_to_destroy_when_the_final_backup_fails(monkeypatch):
     monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
     monkeypatch.setattr(
-        host_cli, "instance_already_gone", lambda _tfvars: (False, "instance is running")
+        host_cli,
+        "instance_already_gone",
+        lambda _tfvars: host_cli.FinalBackup(False, "instance is running"),
     )
     monkeypatch.setattr(host_cli, "cmd_backup", lambda **_kwargs: 1)
 
@@ -983,12 +1219,12 @@ def test_up_passes_clerk_keys_only_to_the_night_stack(monkeypatch, tmp_path):
     assert seen["require_success"] is True
 
 
-def test_bot_policy_is_unchanged_for_idle_shutdown():
-    # The instance publishes with its own role. up and down do not call SNS,
-    # so the bot policy stays free of sns: and of ModifyInstanceAttribute.
+def test_bot_policy_idle_shutdown_does_not_grant_sns():
+    # The instance publishes with its own role. up and down do not call SNS.
+    # ModifyInstanceAttribute is present only for shutdown behavior; see
+    # test_modify_instance_attribute_is_only_shutdown_behavior.
     text = (
         Path(__file__).resolve().parents[1] / "docs" / "grok-bot-dutch-blitz-policy.json"
     ).read_text(encoding="utf-8")
     assert "sns:" not in text
-    assert "ModifyInstanceAttribute" not in text
     assert "ec2:Describe*" in text

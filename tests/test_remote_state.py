@@ -51,7 +51,6 @@ FORBIDDEN_ACTIONS = {
     "ec2:CreateKeyPair",
     "ec2:DeleteKeyPair",
     "ec2:ImportKeyPair",
-    "ec2:ModifyInstanceAttribute",
     "ec2:AssociateIamInstanceProfile",
     "ec2:DisassociateIamInstanceProfile",
     "ec2:ReplaceIamInstanceProfileAssociation",
@@ -210,6 +209,68 @@ def test_bot_policy_is_split_under_the_managed_policy_quota():
     assert "ChangeOnlyBlitzARecord" in sids[cut:]
     assert "LockGameNightState" in sids[cut:]
     assert "ReadGameInstanceProfile" in sids[:cut]
+
+
+def test_modify_instance_attribute_is_only_shutdown_behavior():
+    # Provider v6 calls this after RunInstances. The grant is one attribute,
+    # on the tagged instance, in the game region. Nothing else moves.
+    policy = _policy()
+    by_sid = {statement["Sid"]: statement for statement in policy["Statement"]}
+    statement = by_sid["SetShutdownBehaviorOnTaggedGameInstance"]
+    assert statement["Effect"] == "Allow"
+    assert statement["Action"] == "ec2:ModifyInstanceAttribute"
+    assert statement["Resource"] == "arn:aws:ec2:us-east-2:000000000000:instance/*"
+    assert statement["Condition"]["StringEquals"] == {
+        "aws:RequestedRegion": "us-east-2",
+        "aws:ResourceTag/Project": "dutch-blitz",
+        "ec2:Attribute": "instanceInitiatedShutdownBehavior",
+    }
+    actions = _actions(policy)
+    assert "ec2:ModifyInstanceAttribute" in actions
+    assert "ec2:AssociateIamInstanceProfile" not in actions
+    assert "ec2:DisassociateIamInstanceProfile" not in actions
+    assert "ec2:ReplaceIamInstanceProfileAssociation" not in actions
+    iam = (REPO / "terraform" / "iam-bot" / "main.tf").read_text(encoding="utf-8")
+    assert "SetShutdownBehaviorOnTaggedGameInstance" in iam
+    # The new statement is in the compute half, before PassRole, so the
+    # managed-policy split still matches the Sid set.
+    sids = [item["Sid"] for item in policy["Statement"]]
+    assert sids.index("SetShutdownBehaviorOnTaggedGameInstance") < sids.index(
+        "PassGameRoleToEc2Only"
+    )
+
+
+def _lock_provider_block(text: str, name: str) -> str:
+    marker = f"registry.terraform.io/hashicorp/{name}"
+    start = text.index(marker)
+    rest = text[start:]
+    next_provider = rest.find('\nprovider "', 1)
+    if next_provider == -1:
+        return rest
+    return rest[:next_provider]
+
+
+def test_provider_lockfiles_are_committed():
+    gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
+    ignored = [
+        line.strip()
+        for line in gitignore.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert ".terraform.lock.hcl" not in ignored
+    assert ".terraform/" in ignored
+    dependabot = (REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    assert ".terraform.lock.hcl" in dependabot
+    assert 'package-ecosystem: "terraform"' in dependabot
+    for root in ROOTS:
+        assert f'"/{root}"' in dependabot
+        text = (REPO / root / ".terraform.lock.hcl").read_text(encoding="utf-8")
+        assert "registry.terraform.io/hashicorp/aws" in text
+        assert "registry.terraform.io/hashicorp/null" in text
+        # One h1 hash per platform requested at lock time: linux_amd64,
+        # darwin_arm64, darwin_amd64. zh hashes are the signed checksums.
+        assert _lock_provider_block(text, "aws").count("h1:") >= 3
+        assert _lock_provider_block(text, "null").count("h1:") >= 3
 
 
 def test_bot_policy_refuses_admin_and_bucket_delete():
