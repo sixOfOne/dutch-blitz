@@ -13,11 +13,6 @@ output "public_ip" {
   value       = try(aws_instance.game[0].public_ip, null)
 }
 
-output "ssh_host" {
-  description = "SSH target for the game-night host."
-  value       = try(aws_instance.game[0].public_ip, null)
-}
-
 output "hostname" {
   description = "Public hostname. Route 53 FQDN when dns_zone_name is set, otherwise domain, otherwise <ipv4>.sslip.io."
   value = var.enable_aws ? (
@@ -48,7 +43,7 @@ output "backup_note" {
 }
 
 output "cloud_init" {
-  description = "Boot script for this night. Sensitive because it contains the Clerk keys. configure pipes it to the host over SSH."
+  description = "Boot script for this night. Sensitive because it contains the Clerk keys. configure does not send it. SSM would keep the command parameters. The script is already on the instance from first boot."
   value       = local.boot_script
   sensitive   = true
 }

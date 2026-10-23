@@ -10,17 +10,12 @@
 
 enable_aws         = true
 aws_region         = "us-east-2"
+# Deprecated. The instance has no key pair and port 22 is closed. These
+# four lines stay so an existing terraform.tfvars file still applies.
+# New nights can leave them out. They are not read.
 key_name           = "neo-atari"
 ssh_ingress_cidr   = "203.0.113.10/32"
-# Public IPs of every machine that runs `up` or `down`, each as a /32.
-# Leave the list empty when only one machine opens SSH. Both operators
-# keep this list identical. State is shared, so a different value on one
-# machine rewrites the security group the other is using.
 ssh_ingress_cidrs  = []
-# Public keys for ec2-user, besides the neo-atari key pair. Empty leaves
-# user_data unset. Each entry is one ssh-ed25519 or ssh-rsa line. Both
-# operators keep the same list.
-# extra_ssh_public_keys = ["ssh-ed25519 AAAA... bot@host"]
 extra_ssh_public_keys = []
 instance_type      = "t3.small"
 root_volume_gb     = 8

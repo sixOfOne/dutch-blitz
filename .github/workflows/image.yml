@@ -1,7 +1,7 @@
 # Build the scorekeeper image and publish it to GitHub Container Registry.
 #
 # The game-night host pulls ghcr.io/sixofone/dutch-blitz. It does not
-# copy the working tree over SSH. A pull request only builds the image,
+# copy the working tree onto the instance. A pull request only builds the image,
 # so a fork cannot publish. A push to main, and a manual run, publish.
 
 name: Image

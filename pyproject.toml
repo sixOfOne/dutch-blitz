@@ -37,3 +37,8 @@ pretty = false
 module = ["app.*", "dutch_blitz_host.*"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+
+# boto3 and botocore ship no type stubs. The SSM client is typed as Any.
+[[tool.mypy.overrides]]
+module = ["boto3", "botocore.*"]
+ignore_missing_imports = true

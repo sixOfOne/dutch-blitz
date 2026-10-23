@@ -35,30 +35,30 @@ variable "root_volume_gb" {
   default     = 8
 }
 
-# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
+# tflint-ignore: terraform_unused_declarations  # deprecated shared tfvars; this root does not use it
 variable "key_name" {
-  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  description = "Deprecated. SSH is gone. Declared so the shared tfvars file still applies. Unused by this stack."
   type        = string
   default     = "neo-atari"
 }
 
-# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
+# tflint-ignore: terraform_unused_declarations  # deprecated shared tfvars; this root does not use it
 variable "ssh_ingress_cidr" {
-  description = "Declared so the shared tfvars file applies. Unused by this stack."
+  description = "Deprecated. No SSH ingress rule is created. Declared so the shared tfvars file still applies. Unused by this stack."
   type        = string
   default     = ""
 }
 
-# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
+# tflint-ignore: terraform_unused_declarations  # deprecated shared tfvars; this root does not use it
 variable "ssh_ingress_cidrs" {
-  description = "Declared so the shared tfvars file applies. Unused by this stack. The game-night stack opens SSH to these CIDRs."
+  description = "Deprecated. No SSH ingress rule is created. Declared so the shared tfvars file still applies. Unused by this stack."
   type        = list(string)
   default     = []
 }
 
-# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
+# tflint-ignore: terraform_unused_declarations  # deprecated shared tfvars; this root does not use it
 variable "extra_ssh_public_keys" {
-  description = "Declared so the shared tfvars file applies. Unused by this stack. The game-night stack installs these keys for ec2-user."
+  description = "Deprecated. No SSH public keys are installed. Declared so the shared tfvars file still applies. Unused by this stack."
   type        = list(string)
   default     = []
 

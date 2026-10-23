@@ -86,7 +86,7 @@ def destroy_plan(*, skip_backup: bool, instance_gone: bool = False) -> list[str]
     """Steps for tearing down a game night. The backup bucket is not one of them.
 
     ``instance_gone`` means the host already terminated itself. The on-server
-    timer uploaded a snapshot before ``shutdown -h now``, so the SSH backup
+    timer uploaded a snapshot before ``shutdown -h now``, so the final backup
     is skipped. The blitz DNS record and this stack are still destroyed.
     """
     steps: list[str] = []

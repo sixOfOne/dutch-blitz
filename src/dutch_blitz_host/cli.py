@@ -3,10 +3,11 @@
 Local-first: with ``enable_aws`` left false, apply only records that AWS is
 off. A night sets ``enable_aws = true`` in the gitignored tfvars file.
 
-The instance boots from cloud-init. ``up`` waits for that script. ``configure``
-applies the game-night stack and pipes the current script over SSH, which is
-how a second run retries S3 or picks up a new image pin without replacing
-the instance.
+The instance boots from cloud-init. ``up`` waits for the SSM agent, then
+for that script. ``configure`` applies the game-night stack and re-runs the
+boot script already stored on the instance. A new image pin is written
+beside that script. The script itself is not a SendCommand parameter: it
+contains the Clerk keys, and SSM keeps command parameters.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,17 +32,28 @@ from dutch_blitz_host.instance_status import (
     LiveInstance,
     StateGameInstance,
     describe_instances_argv,
-    describe_instances_by_id_argv,
     describe_tagged_game_instances_argv,
     game_name_tag,
     parse_describe_instances,
     parse_described_instances,
     parse_game_instance_show,
     pick_tagged_instance,
-    should_skip_ssh_backup,
+    should_skip_backup,
     valid_instance_id,
-    valid_public_ipv4,
     valid_region,
+)
+from dutch_blitz_host.ssm import (
+    BACKUP_COMMAND,
+    BACKUP_TIMEOUT_SECONDS,
+    CLOUD_INIT_WAIT_COMMAND,
+    CLOUD_INIT_WAIT_TIMEOUT_SECONDS,
+    CONFIGURE_TIMEOUT_SECONDS,
+    SSM_ONLINE_TIMEOUT_SECONDS,
+    CommandResult,
+    ConfigureOverrides,
+    configure_shell,
+    run_shell_script,
+    wait_for_ssm_online,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,15 +65,6 @@ BACKEND_CONFIG = NIGHT_DIR / "backend.hcl"
 # A second apply (the Mac and the Linux box) waits this long for the
 # S3 lock file instead of failing at once. The default Terraform wait is 0s.
 LOCK_TIMEOUT = "120s"
-SSH_USER = "ec2-user"
-CLOUD_INIT_WAIT_COMMAND = "sudo cloud-init status --wait"
-REMOTE_BOOT_COMMAND = "sudo bash -s"
-CLOUD_INIT_WAIT_TIMEOUT_SECONDS = 1200
-SSH_KEY_DEFAULT = Path.home() / ".ssh" / "neo-atari.pem"
-REMOTE_BACKUP = "sudo /usr/local/bin/dutch-blitz-backup backup"
-SSH_WAIT_TIMEOUT_SECONDS = 300
-SSH_WAIT_INTERVAL_SECONDS = 5
-SSH_PROBE_CONNECT_TIMEOUT_SECONDS = 5
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,7 +74,6 @@ def build_parser() -> argparse.ArgumentParser:
     up = subparsers.add_parser(
         "up", help="Create the bucket if needed, start the instance, configure it, print the URL"
     )
-    _add_ssh_key(up)
     _add_init(up)
 
     apply = subparsers.add_parser(
@@ -92,20 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     configure = subparsers.add_parser(
         "configure",
-        help="Re-run the cloud-init boot script over SSH (retry S3, or apply a new image pin)",
+        help="Re-run the boot script already on the instance (retry S3, or apply a new image pin)",
     )
-    configure.add_argument("--dry-run", action="store_true", help="print the SSH command only")
-    _add_ssh_key(configure)
+    configure.add_argument("--dry-run", action="store_true", help="print the SSM command only")
 
     backup = subparsers.add_parser("backup", help="Upload a consistent SQLite snapshot to S3")
-    _add_ssh_key(backup)
-    backup.add_argument("--dry-run", action="store_true", help="print the SSH command only")
+    backup.add_argument("--dry-run", action="store_true", help="print the SSM command only")
 
     destroy = subparsers.add_parser(
         "destroy",
         help="Back up the score book, then terraform destroy the instance. The S3 bucket stays.",
     )
-    _add_ssh_key(destroy)
     destroy.add_argument("--dry-run", action="store_true", help="print the destroy plan only")
     destroy.add_argument(
         "--skip-backup",
@@ -115,29 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_init(destroy)
 
     down = subparsers.add_parser("down", help="Same as destroy")
-    _add_ssh_key(down)
     down.add_argument("--dry-run", action="store_true")
     down.add_argument("--skip-backup", action="store_true")
     _add_init(down)
     return parser
-
-
-def _add_ssh_key(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--ssh-key",
-        default=None,
-        help="SSH private key for ec2-user. Default: DUTCH_BLITZ_SSH_KEY, or ~/.ssh/neo-atari.pem.",
-    )
-
-
-def resolve_ssh_key(explicit: str | None) -> str:
-    """Flag, then DUTCH_BLITZ_SSH_KEY, then ~/.ssh/neo-atari.pem."""
-    if explicit is not None and explicit.strip():
-        return str(Path(explicit).expanduser())
-    env = os.environ.get("DUTCH_BLITZ_SSH_KEY", "").strip()
-    if env:
-        return str(Path(env).expanduser())
-    return str(SSH_KEY_DEFAULT)
 
 
 def _add_init(parser: argparse.ArgumentParser) -> None:
@@ -185,60 +164,6 @@ def clerk_terraform_env(env: dict[str, str]) -> dict[str, str]:
         "TF_VAR_clerk_publishable_key": env["CLERK_PUBLISHABLE_KEY"].strip(),
         "TF_VAR_clerk_secret_key": env["CLERK_SECRET_KEY"].strip(),
     }
-
-
-def ssh_argv(host: str, key: Path, remote_command: str) -> list[str]:
-    return [
-        "ssh",
-        "-i",
-        str(key),
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "BatchMode=yes",
-        f"{SSH_USER}@{host}",
-        remote_command,
-    ]
-
-
-def backup_ssh_argv(host: str, key: Path) -> list[str]:
-    return ssh_argv(host, key, REMOTE_BACKUP)
-
-
-def ssh_probe_argv(host: str, key: Path) -> list[str]:
-    """A no-op SSH login, used to tell when a new instance accepts the key."""
-    argv = ssh_argv(host, key, "true")
-    return argv[:-2] + ["-o", f"ConnectTimeout={SSH_PROBE_CONNECT_TIMEOUT_SECONDS}"] + argv[-2:]
-
-
-def wait_for_ssh(
-    host: str,
-    key: Path,
-    *,
-    timeout: float = SSH_WAIT_TIMEOUT_SECONDS,
-    interval: float = SSH_WAIT_INTERVAL_SECONDS,
-    run: Any = subprocess.run,
-    sleep: Any = time.sleep,
-    clock: Any = time.monotonic,
-) -> bool:
-    """Retry an SSH login until it succeeds or ``timeout`` seconds pass.
-
-    A freshly launched instance refuses port 22 for a short while, and then
-    cloud-init still has to install the authorized key.
-    """
-    argv = ssh_probe_argv(host, key)
-    deadline = clock() + timeout
-    attempt = 0
-    while True:
-        attempt += 1
-        result = run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if result.returncode == 0:
-            print(f"SSH is ready on {host} (attempt {attempt}).")
-            return True
-        if clock() + interval > deadline:
-            return False
-        print(f"Waiting for SSH on {host} (attempt {attempt})...")
-        sleep(interval)
 
 
 def _fmt(cmd: list[str]) -> str:
@@ -331,17 +256,20 @@ def output_value(outputs: dict, name: str) -> str | None:
     return str(value)
 
 
-def require_aws_outputs(outputs: dict) -> tuple[str, str, str]:
+def require_aws_outputs(outputs: dict) -> tuple[str, str, str, str]:
     mode = output_value(outputs, "mode")
     ip = output_value(outputs, "public_ip")
     hostname = output_value(outputs, "hostname")
     bucket = output_value(outputs, "backup_bucket")
-    if mode != "aws" or not ip or not hostname or not bucket:
+    instance_id = output_value(outputs, "instance_id")
+    if mode != "aws" or not ip or not hostname or not bucket or not instance_id:
         raise SystemExit(
             "AWS host unavailable. Set enable_aws=true in terraform/terraform.tfvars "
             "and run `PYTHONPATH=src python3 -m dutch_blitz_host up`."
         )
-    return ip, hostname, bucket
+    if not valid_instance_id(instance_id):
+        raise SystemExit(f"Terraform instance id {instance_id!r} is not an EC2 id.")
+    return ip, hostname, bucket, instance_id
 
 
 def _init_terraform(tf_dir: Path, *, var_file: Path | None, do_init: bool) -> int:
@@ -392,91 +320,131 @@ def night_terraform_env() -> dict[str, str] | None:
     return clerk_terraform_env(env)
 
 
-def cmd_backup(*, ssh_key: str, dry_run: bool, host: str | None = None) -> int:
-    """Upload a snapshot over SSH.
+def _minutes_from_tfvars(tfvars: dict[str, str], name: str, default: int) -> int:
+    raw = tfvars.get(name, "").strip()
+    if not raw:
+        return default
+    if not raw.isdigit():
+        raise SystemExit(f"{name} in terraform.tfvars must be a whole number of minutes.")
+    return int(raw)
 
-    ``host`` is the public IP to use when Terraform outputs have none,
-    which is what a tainted create leaves behind. The address has to be
-    an IPv4 literal. It is not taken from a free-form string in argv.
+
+def configure_overrides_from(tfvars: dict[str, str], app_image: str) -> ConfigureOverrides:
+    """Image pin and idle numbers from outputs and tfvars. No Clerk keys."""
+    try:
+        return ConfigureOverrides(
+            app_image=app_image,
+            idle_warn_minutes=_minutes_from_tfvars(tfvars, "idle_warn_minutes", 60),
+            idle_shutdown_minutes=_minutes_from_tfvars(tfvars, "idle_shutdown_minutes", 90),
+            uptime_warn_minutes=_minutes_from_tfvars(tfvars, "uptime_warn_minutes", 420),
+            uptime_shutdown_minutes=_minutes_from_tfvars(tfvars, "uptime_shutdown_minutes", 480),
+            idle_snooze_minutes=_minutes_from_tfvars(tfvars, "idle_snooze_minutes", 120),
+            idle_check_minutes=_minutes_from_tfvars(tfvars, "idle_check_minutes", 15),
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _command_exit(result: CommandResult) -> int:
+    if result.status == "Success" and result.exit_code == 0:
+        return 0
+    if result.exit_code > 0:
+        return result.exit_code
+    return 1
+
+
+def cmd_backup(
+    *,
+    dry_run: bool,
+    instance_id: str | None = None,
+    region: str | None = None,
+) -> int:
+    """Upload a snapshot over SSM.
+
+    ``instance_id`` is set when Terraform outputs have none, which is what
+    a tainted create leaves behind. The id has to look like an EC2 id.
+    SSM does not use the public IP. The agent calls out to the service.
     """
-    if host is not None:
-        if not valid_public_ipv4(host):
-            raise SystemExit(f"Refusing SSH backup to unexpected host {host!r}.")
-        ip = host
-    else:
+    tfvars = load_tfvars()
+    if instance_id is None:
         outputs = terraform_outputs(NIGHT_DIR)
-        ip, _hostname, _bucket = require_aws_outputs(outputs)
-    key = Path(ssh_key).expanduser()
-    cmd = backup_ssh_argv(ip, key)
-    print("Backup:", _fmt(cmd))
+        _ip, _hostname, _bucket, instance_id = require_aws_outputs(outputs)
+    if region is None:
+        region = _night_region(tfvars)
+    if not valid_instance_id(instance_id):
+        raise SystemExit(f"Refusing SSM backup to unexpected instance {instance_id!r}.")
+    if not valid_region(region):
+        raise SystemExit(f"Refusing SSM backup in unexpected region {region!r}.")
+    print(f"Backup: SSM {instance_id} {BACKUP_COMMAND}")
     if dry_run:
         print("Dry run only; no backup was uploaded.")
         return 0
-    if not key.is_file():
-        raise SystemExit(f"SSH key not found: {key}")
-    return _run(cmd, REPO_ROOT)
+    result = run_shell_script(
+        instance_id,
+        region,
+        BACKUP_COMMAND,
+        timeout_seconds=BACKUP_TIMEOUT_SECONDS,
+        comment="dutch-blitz backup",
+        secrets=_secret_values(load_controller_env()),
+    )
+    return _command_exit(result)
 
 
-def read_cloud_init_script(tf_dir: Path = NIGHT_DIR) -> str:
-    """The rendered boot script. Stdout only. The script contains Clerk keys."""
-    try:
-        raw = subprocess.check_output(
-            [_terraform(), "output", "-raw", "cloud_init"],
-            cwd=str(tf_dir),
-            text=True,
-            stderr=subprocess.PIPE,
-        )
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").strip()
-        raise SystemExit(
-            "Could not read terraform output cloud_init. Apply the game-night stack first. "
-            + detail
-        ) from exc
-    if not raw.startswith("#!/bin/bash"):
-        raise SystemExit("terraform output cloud_init is not the boot script.")
-    return raw
-
-
-def run_remote_script(host: str, key: Path, script: str, *, run: Any = subprocess.run) -> int:
-    """Pipe the boot script to root over SSH. The script is not a command argument."""
-    cmd = ssh_argv(host, key, REMOTE_BOOT_COMMAND)
-    print("Launch:", _fmt(cmd))
-    completed = run(cmd, input=script, text=True, check=False)
-    return int(completed.returncode)
+def wait_for_ssm(instance_id: str, region: str, *, client: Any | None = None) -> bool:
+    """Wait until the agent is Online. The budget is two minutes."""
+    if wait_for_ssm_online(instance_id, region, client=client):
+        return True
+    print(
+        f"The SSM agent on {instance_id} was not Online within "
+        f"{SSM_ONLINE_TIMEOUT_SECONDS} seconds. "
+        "Amazon Linux 2023 starts it at boot. When DescribeInstanceInformation "
+        "shows PingStatus=Online, run: "
+        "PYTHONPATH=src python3 -m dutch_blitz_host configure",
+        file=sys.stderr,
+    )
+    return False
 
 
 def wait_for_cloud_init(
-    host: str,
-    key: Path,
+    instance_id: str,
+    region: str,
     *,
     require_success: bool,
-    run: Any = subprocess.run,
+    client: Any | None = None,
 ) -> bool:
     """Block until cloud-init finishes. First boot is what runs the script.
 
     ``require_success`` is for ``up``. ``configure`` only needs the first
     boot to be finished so a second run does not overlap it. A finished
-    error still returns true in that case.
+    error still returns true in that case. A timeout does not: the script
+    may still be running.
     """
-    cmd = ssh_argv(host, key, CLOUD_INIT_WAIT_COMMAND)
-    print("Launch:", _fmt(cmd))
-    try:
-        result = run(cmd, timeout=CLOUD_INIT_WAIT_TIMEOUT_SECONDS, check=False)
-    except subprocess.TimeoutExpired:
+    result = run_shell_script(
+        instance_id,
+        region,
+        CLOUD_INIT_WAIT_COMMAND,
+        timeout_seconds=CLOUD_INIT_WAIT_TIMEOUT_SECONDS,
+        comment="dutch-blitz cloud-init status --wait",
+        client=client,
+        secrets=_secret_values(load_controller_env()),
+    )
+    if result.status == "Success" and result.exit_code == 0:
+        print(f"cloud-init finished on {instance_id}.")
+        return True
+    finished_with_error = result.status == "Failed" and result.exit_code > 0
+    if finished_with_error and not require_success:
+        print(f"cloud-init on {instance_id} finished with an error. Running the boot script again.")
+        return True
+    if not finished_with_error:
         print(
-            f"cloud-init on {host} did not finish within {CLOUD_INIT_WAIT_TIMEOUT_SECONDS} seconds. "
-            "SSH in and read /var/log/cloud-init-output.log, then run configure.",
+            f"cloud-init on {instance_id} did not finish within "
+            f"{CLOUD_INIT_WAIT_TIMEOUT_SECONDS} seconds. "
+            "Read /var/log/cloud-init-output.log from Session Manager, then run configure.",
             file=sys.stderr,
         )
         return False
-    if result.returncode == 0:
-        print(f"cloud-init finished on {host}.")
-        return True
-    if not require_success:
-        print(f"cloud-init on {host} finished with an error. Running the boot script again.")
-        return True
     print(
-        f"cloud-init on {host} failed. The boot script's own log is "
+        f"cloud-init on {instance_id} failed. The boot script's own log is "
         "/var/log/cloud-init-output.log on the instance. "
         "When the instance role can reach S3, run: "
         "PYTHONPATH=src python3 -m dutch_blitz_host configure",
@@ -485,24 +453,37 @@ def wait_for_cloud_init(
     return False
 
 
-def cmd_configure(*, ssh_key: str, dry_run: bool) -> int:
-    """Apply the night stack, then run the current boot script on the host.
+def _configure_script(tfvars: dict[str, str], app_image: str) -> str:
+    try:
+        return configure_shell(configure_overrides_from(tfvars, app_image))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def cmd_configure(*, dry_run: bool) -> int:
+    """Apply the night stack, then re-run the boot script already on the host.
 
     Apply does not replace the instance. user_data changes are ignored so
     a new image pin or idle limit does not stop the machine. The script
-    piped over SSH is the current render, and that is what the host runs.
+    cloud-init stored on first boot is what the host runs. ``configure``
+    writes the current image pin and idle numbers to a file that script
+    reads. Those values are not secrets. The Clerk keys stay in the
+    on-instance script and are not SendCommand parameters.
     """
     env = load_controller_env()
     assert_deployable(env)
     tfvars = load_tfvars()
     outputs = terraform_outputs(NIGHT_DIR)
-    ip, hostname, _bucket = require_aws_outputs(outputs)
-    key = Path(ssh_key).expanduser()
+    ip, hostname, _bucket, instance_id = require_aws_outputs(outputs)
+    region = _night_region(tfvars)
+    app_image = output_value(outputs, "app_image") or ""
+    script = _configure_script(tfvars, app_image)
     print(f"Hostname: {hostname}")
     print(f"Share URL: {https_origin(hostname)}")
-    print("Launch:", _fmt(ssh_argv(ip, key, REMOTE_BOOT_COMMAND)))
-    print("The boot script is not printed. It contains the Clerk keys.")
+    print(f"SSM {instance_id}: re-run the boot script already on the instance.")
+    print("The boot script is not sent. It contains the Clerk keys.")
     if dry_run:
+        print(script, end="")
         print("Dry run only; the host was not changed.")
         return 0
     if not _dns_ready(tfvars, hostname=hostname, public_ip=ip, dry_run=False):
@@ -516,12 +497,23 @@ def cmd_configure(*, ssh_key: str, dry_run: bool) -> int:
     )
     if code != 0:
         return code
-    if not key.is_file():
-        raise SystemExit(f"SSH key not found: {key}")
-    if not wait_for_cloud_init(ip, key, require_success=False):
+    outputs = terraform_outputs(NIGHT_DIR)
+    _ip, _hostname, _bucket, instance_id = require_aws_outputs(outputs)
+    app_image = output_value(outputs, "app_image") or ""
+    script = _configure_script(tfvars, app_image)
+    if not wait_for_ssm(instance_id, region):
         return 1
-    script = read_cloud_init_script()
-    return run_remote_script(ip, key, script)
+    if not wait_for_cloud_init(instance_id, region, require_success=False):
+        return 1
+    result = run_shell_script(
+        instance_id,
+        region,
+        script,
+        timeout_seconds=CONFIGURE_TIMEOUT_SECONDS,
+        comment="dutch-blitz configure",
+        secrets=_secret_values(env),
+    )
+    return _command_exit(result)
 
 
 def _dns_ready(tfvars: dict[str, str], *, hostname: str, public_ip: str, dry_run: bool) -> bool:
@@ -563,13 +555,13 @@ def _dns_ready(tfvars: dict[str, str], *, hostname: str, public_ip: str, dry_run
     return False
 
 
-def cmd_up(*, do_init: bool, ssh_key: str) -> int:
+def cmd_up(*, do_init: bool) -> int:
     tfvars = load_tfvars()
     if not aws_enabled(tfvars):
         raise SystemExit(
             "enable_aws is false, so no instance will be created. "
             "Copy terraform/terraform.tfvars.example to terraform/terraform.tfvars, "
-            "set enable_aws = true, your SSH CIDR, and a backup bucket name, then re-run."
+            "set enable_aws = true and a backup bucket name, then re-run."
         )
     controller = load_controller_env()
     assert_deployable(controller)
@@ -593,21 +585,13 @@ def cmd_up(*, do_init: bool, ssh_key: str) -> int:
     if code != 0:
         return code
     outputs = terraform_outputs(NIGHT_DIR)
-    ip, hostname, _bucket = require_aws_outputs(outputs)
-    key = Path(ssh_key).expanduser()
-    if not key.is_file():
-        raise SystemExit(f"SSH key not found: {key}")
-    if not wait_for_ssh(ip, key):
-        print(
-            f"SSH on {ip} did not accept {key} within {SSH_WAIT_TIMEOUT_SECONDS} seconds. "
-            "When it does, run: "
-            f"PYTHONPATH=src python3 -m dutch_blitz_host configure --ssh-key {key}",
-            file=sys.stderr,
-        )
+    ip, hostname, _bucket, instance_id = require_aws_outputs(outputs)
+    region = _night_region(tfvars)
+    if not wait_for_ssm(instance_id, region):
         return 1
     if not _dns_ready(tfvars, hostname=hostname, public_ip=ip, dry_run=False):
         return 1
-    if not wait_for_cloud_init(ip, key, require_success=True):
+    if not wait_for_cloud_init(instance_id, region, require_success=True):
         return 1
     print(f"Game night is up. Share {https_origin(hostname)}")
     print(f"Image: {output_value(outputs, 'app_image')}")
@@ -658,28 +642,6 @@ def game_instance_from_state(tf_dir: Path = NIGHT_DIR) -> tuple[StateGameInstanc
     return parse_game_instance_show(document), False
 
 
-def describe_instance_public_ip(
-    instance_id: str, region: str, *, run: Any = subprocess.run
-) -> str | None:
-    """Public IPv4 of one instance, or None when describe cannot say."""
-    if shutil.which("aws") is None:
-        return None
-    completed = run(
-        describe_instances_by_id_argv(instance_id, region),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    instances, failed = parse_described_instances(
-        completed.stdout or "",
-        completed.stderr or "",
-        completed.returncode,
-    )
-    if failed or not instances:
-        return None
-    return instances[0].public_ip
-
-
 def find_instances_by_tag(
     region: str, *, run: Any = subprocess.run
 ) -> tuple[list[LiveInstance], bool]:
@@ -711,94 +673,77 @@ def _night_region(tfvars: dict[str, str]) -> str:
 def _describe_known_instance(
     instance_id: str,
     region: str,
-    public_ip: str | None,
     *,
     prefix: str,
 ) -> FinalBackup:
-    """Describe one id and decide whether SSH still has somewhere to go.
+    """Describe one id and decide whether SSM still has somewhere to go.
 
     ``prefix`` is empty for a normal id, or ``"tainted "`` when state
-    marked the object tainted. The host is returned whenever one is
-    known, including an address that came from state rather than outputs.
+    marked the object tainted. The id is enough. SSM does not need a
+    public address. A missing address used to block the SSH backup.
     """
     if not valid_region(region):
         return FinalBackup(
             False,
-            "aws_region is not a region name; trying the SSH backup",
-            public_ip,
+            "aws_region is not a region name; trying the SSM backup",
+            instance_id,
         )
     state, failed = describe_instance_state(instance_id, region)
-    if should_skip_ssh_backup(state, describe_failed=failed):
+    if should_skip_backup(state, describe_failed=failed):
         label = state or "missing"
         return FinalBackup(True, f"{instance_id} is {label}")
     if failed:
         return FinalBackup(
             False,
-            "could not describe the instance; trying the SSH backup",
-            public_ip,
+            "could not describe the instance; trying the SSM backup",
+            instance_id,
         )
-    host = public_ip or describe_instance_public_ip(instance_id, region)
     noun = f"{prefix}instance"
-    if host and host != public_ip:
-        return FinalBackup(
-            False,
-            f"{noun} {instance_id} is {state}; public IP came from DescribeInstances",
-            host,
-        )
-    if not host:
-        return FinalBackup(
-            False,
-            f"{noun} {instance_id} is {state} but has no public IP. "
-            "The final backup was not uploaded, and the instance was left up.",
-            refuse=True,
-        )
-    return FinalBackup(False, f"{noun} is {state}", host)
+    return FinalBackup(False, f"{noun} is {state}", instance_id)
 
 
-def _backup_without_output_id(tfvars: dict[str, str], public_ip: str | None) -> FinalBackup:
+def _backup_without_output_id(tfvars: dict[str, str]) -> FinalBackup:
     """Outputs have no instance id. State or the Project tag may still name one.
 
-    An empty state really is an empty night: skip SSH and destroy.
+    An empty state really is an empty night: skip the backup and destroy.
     A tainted or un-id'd ``aws_instance.game`` is not empty. Find the
-    instance and back it up. A describe failure is not proof it is gone.
+    instance and back it up over SSM. A describe failure is not proof it
+    is gone.
     """
     state_instance, state_failed = game_instance_from_state()
     region = _night_region(tfvars)
     if state_instance is not None and state_instance.instance_id:
-        ip = public_ip or state_instance.public_ip
         prefix = "tainted " if state_instance.tainted else ""
         return _describe_known_instance(
             state_instance.instance_id,
             region,
-            ip,
             prefix=prefix,
         )
 
     if state_instance is None and not state_failed:
         return FinalBackup(True, "Terraform state has no instance id")
 
-    if not valid_region(region):
-        return FinalBackup(
-            False,
-            "aws_region is not a region name; trying the SSH backup",
-            public_ip,
-        )
-    name_tag = game_name_tag(tfvars.get("name_prefix", ""))
-    tagged, tag_failed = find_instances_by_tag(region)
     if state_instance is not None and state_instance.tainted:
         why = "tainted instance has no id"
     elif state_instance is not None:
         why = "instance in state has no id"
     else:
         why = "Terraform state could not be read"
-    recovered_ip = public_ip
-    if recovered_ip is None and state_instance is not None:
-        recovered_ip = state_instance.public_ip
+    if not valid_region(region):
+        return FinalBackup(
+            False,
+            f"{why}; aws_region is not a region name. "
+            "The final backup was not uploaded, and the instance was left up.",
+            refuse=True,
+        )
+    name_tag = game_name_tag(tfvars.get("name_prefix", ""))
+    tagged, tag_failed = find_instances_by_tag(region)
     if tag_failed:
         return FinalBackup(
             False,
-            f"{why}; could not describe instances by tag; trying the SSH backup",
-            recovered_ip,
+            f"{why}; could not describe instances by tag. "
+            "The final backup was not uploaded, and the instance was left up.",
+            refuse=True,
         )
     choice = pick_tagged_instance(tagged, name_tag=name_tag)
     if choice.ambiguous:
@@ -822,26 +767,19 @@ def _backup_without_output_id(tfvars: dict[str, str], public_ip: str | None) -> 
             True,
             f"{why}, and no running instance is tagged Project={PROJECT_TAG_VALUE}",
         )
-    if not choice.instance.public_ip:
-        return FinalBackup(
-            False,
-            f"{why}. {choice.instance.instance_id} is {choice.instance.state or 'unknown'} "
-            "but has no public IP. The final backup was not uploaded, and the instance was left up.",
-            refuse=True,
-        )
     return FinalBackup(
         False,
         f"{why}; {choice.instance.instance_id} is {choice.instance.state}, "
         f"found by tag Project={PROJECT_TAG_VALUE}",
-        choice.instance.public_ip,
+        choice.instance.instance_id,
     )
 
 
 def instance_already_gone(tfvars: dict[str, str]) -> FinalBackup:
-    """Whether ``down`` should skip SSH because the host already terminated.
+    """Whether ``down`` should skip the backup because the host already terminated.
 
     ``skip`` is false when describe fails or the id looks wrong. Those
-    cases still try SSH, so a blip does not destroy a night whose latest
+    cases still try SSM, so a blip does not destroy a night whose latest
     scores never reached S3.
 
     No id in the outputs is not, by itself, proof the instance is gone.
@@ -853,31 +791,31 @@ def instance_already_gone(tfvars: dict[str, str]) -> FinalBackup:
     except subprocess.CalledProcessError:
         outputs = {}
     instance_id = output_value(outputs, "instance_id")
-    public_ip = output_value(outputs, "public_ip")
     if instance_id and not valid_instance_id(instance_id):
         return FinalBackup(
             False,
-            f"instance id {instance_id!r} is unexpected; trying the SSH backup",
-            public_ip,
+            f"instance id {instance_id!r} is unexpected. "
+            "The final backup was not uploaded, and the instance was left up.",
+            refuse=True,
         )
     if not instance_id:
-        return _backup_without_output_id(tfvars, public_ip)
-    return _describe_known_instance(instance_id, _night_region(tfvars), public_ip, prefix="")
+        return _backup_without_output_id(tfvars)
+    return _describe_known_instance(instance_id, _night_region(tfvars), prefix="")
 
 
-def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool) -> int:
+def cmd_destroy(*, dry_run: bool, skip_backup: bool, do_init: bool) -> int:
     print(f"The backup bucket stack ({BACKUP_STACK}) is not destroyed.")
     print("The instance role and the idle SNS topic (terraform/game-role) are not destroyed.")
     if dry_run:
         steps = destroy_plan(skip_backup=skip_backup)
         print("Destroy plan:", ", ".join(steps))
         print(
-            "If the instance already terminated itself, down skips the SSH backup "
+            "If the instance already terminated itself, down skips the backup "
             "and still removes the blitz DNS record and Terraform state."
         )
         print(
             "If state has a tainted or un-id'd instance, down looks it up by the "
-            "Project=dutch-blitz tag and still uploads the final snapshot."
+            "Project=dutch-blitz tag and still uploads the final snapshot over SSM."
         )
         print("Dry run only; nothing was destroyed.")
         return 0
@@ -894,17 +832,21 @@ def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool
         gone = plan.skip
         if gone:
             print(
-                f"The instance is already gone ({plan.detail}). Skipping the SSH backup. "
+                f"The instance is already gone ({plan.detail}). Skipping the backup. "
                 "The on-server shutdown uploads a snapshot before it powers off. "
                 "DNS and Terraform state are still removed."
             )
         else:
             print(f"{plan.detail}. Uploading a final snapshot.")
-            code = cmd_backup(ssh_key=ssh_key, dry_run=False, host=plan.host)
+            code = cmd_backup(
+                dry_run=False,
+                instance_id=plan.instance_id,
+                region=_night_region(tfvars),
+            )
             if code != 0:
                 print(
                     "Final backup failed, so the instance was left up. "
-                    "Fix SSH or S3, or re-run with --skip-backup if the host is already gone.",
+                    "Fix SSM or S3, or re-run with --skip-backup if the host is already gone.",
                     file=sys.stderr,
                 )
                 return code
@@ -915,9 +857,8 @@ def cmd_destroy(*, ssh_key: str, dry_run: bool, skip_backup: bool, do_init: bool
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    ssh_key = resolve_ssh_key(getattr(args, "ssh_key", None))
     if args.command == "up":
-        return cmd_up(do_init=args.init, ssh_key=ssh_key)
+        return cmd_up(do_init=args.init)
     if args.command == "apply":
         return cmd_terraform(
             NIGHT_DIR,
@@ -934,12 +875,11 @@ def main(argv: list[str] | None = None) -> int:
             var_file=TFVARS,
         )
     if args.command == "configure":
-        return cmd_configure(ssh_key=ssh_key, dry_run=args.dry_run)
+        return cmd_configure(dry_run=args.dry_run)
     if args.command == "backup":
-        return cmd_backup(ssh_key=ssh_key, dry_run=args.dry_run)
+        return cmd_backup(dry_run=args.dry_run)
     if args.command in {"destroy", "down"}:
         return cmd_destroy(
-            ssh_key=ssh_key,
             dry_run=args.dry_run,
             skip_backup=args.skip_backup,
             do_init=args.init,

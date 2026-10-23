@@ -28,26 +28,30 @@ variable "root_volume_gb" {
   default     = 8
 }
 
+# tflint-ignore: terraform_unused_declarations  # deprecated; kept so an existing shared tfvars file still applies
 variable "key_name" {
-  description = "Existing EC2 key pair name in aws_region. The private key stays on the controller."
+  description = "Deprecated. The instance has no EC2 key pair. Port 22 is closed. Declared so an existing terraform.tfvars file still applies."
   type        = string
   default     = "neo-atari"
 }
 
+# tflint-ignore: terraform_unused_declarations  # deprecated; kept so an existing shared tfvars file still applies
 variable "ssh_ingress_cidr" {
-  description = "CIDR allowed to SSH. Use your public IP as a /32. Required when enable_aws is true. HTTP and HTTPS stay open so phones can join."
+  description = "Deprecated. No SSH ingress rule is created. HTTP and HTTPS stay open. Declared so an existing terraform.tfvars file still applies."
   type        = string
   default     = ""
 }
 
+# tflint-ignore: terraform_unused_declarations  # deprecated; kept so an existing shared tfvars file still applies
 variable "ssh_ingress_cidrs" {
-  description = "Extra SSH CIDRs, such as the Linux assistant's public IP as a /32. ssh_ingress_cidr is still required. The game-night security group allows the whole list. Both operators keep the same list: state is shared, and a different value rewrites the security group."
+  description = "Deprecated. No SSH ingress rule is created. Declared so an existing terraform.tfvars file still applies."
   type        = list(string)
   default     = []
 }
 
+# tflint-ignore: terraform_unused_declarations  # deprecated; kept so an existing shared tfvars file still applies
 variable "extra_ssh_public_keys" {
-  description = "SSH public keys added to ec2-user at boot, besides the EC2 key pair. Empty omits the cloud-config part; the boot script is still user data. Both operators keep the same list in the shared tfvars."
+  description = "Deprecated. No SSH public keys are installed. Declared so an existing terraform.tfvars file still applies."
   type        = list(string)
   default     = []
 

@@ -1,0 +1,4 @@
+# Controller only. up, configure, backup, and down call SSM through boto3.
+# The scorekeeper image installs requirements.txt and does not install this
+# file. The host tools copied out of the image use the AWS CLI, not boto3.
+boto3==1.43.118

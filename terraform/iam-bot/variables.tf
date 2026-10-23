@@ -46,8 +46,9 @@ variable "name_prefix" {
   default     = "dutch-blitz"
 }
 
+# tflint-ignore: terraform_unused_declarations  # deprecated; an existing iam-bot tfvars file may still set it
 variable "key_name" {
-  description = "Existing EC2 key pair the bot may use at launch. It cannot create or delete key pairs. Default matches terraform/variables.tf."
+  description = "Deprecated. The bot no longer passes a key pair to RunInstances. Declared so an existing terraform/iam-bot/terraform.tfvars file still applies."
   type        = string
   default     = "neo-atari"
 }

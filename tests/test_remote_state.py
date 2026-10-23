@@ -54,6 +54,11 @@ FORBIDDEN_ACTIONS = {
     "ec2:AssociateIamInstanceProfile",
     "ec2:DisassociateIamInstanceProfile",
     "ec2:ReplaceIamInstanceProfileAssociation",
+    "ssm:StartSession",
+    "ssm:PutParameter",
+    "ssm:DeleteParameter",
+    "ssm:GetParameter",
+    "ssm:GetParameters",
     "route53:CreateHostedZone",
     "route53:DeleteHostedZone",
     "route53:ChangeTagsForResource",
@@ -74,7 +79,6 @@ EXAMPLE_VALUES = {
     "dns_zone_id": "Z000000000000EXAMPLE",
     "dns_record_name": "blitz",
     "role_name": "dutch-blitz-game",
-    "key_name": "neo-atari",
     "budget_name": "dutch-blitz-monthly",
 }
 REAL_VALUES = {
@@ -160,7 +164,7 @@ def test_rendered_policy_has_no_placeholder_fragments():
     assert zones
     assert set(zones) == {"arn:aws:route53:::hostedzone/Z1234567890ABC"}
     assert "arn:aws:iam::123456789012:role/dutch-blitz-game" in rendered
-    assert "arn:aws:ec2:us-east-2:123456789012:key-pair/neo-atari" in rendered
+    assert "key-pair/" not in rendered
     # The historical bug left this shape: account id substituted inside
     # the zone token, and the zone replace then found nothing.
     assert "hostedzone/Z123456789012EXAMPLE" not in rendered
@@ -187,6 +191,12 @@ def test_iam_bot_renders_with_templatefile_and_rejects_leftover_fragments():
     assert 'strcontains(local.bot_policy_json, "000000000000")' in iam
     assert 'strcontains(local.bot_policy_json, "replace-me")' in iam
     assert "!var.enable_aws" in iam
+    # description is ForceNew. The applied sentence stays so a plan updates
+    # the document in place. SSM is in the policy JSON, not this string.
+    assert (
+        'description = "EC2 and PassRole for the pre-existing game role, '
+        'for dutch_blitz_host up and down."' in iam
+    )
 
 
 def test_bot_policy_is_split_under_the_managed_policy_quota():
@@ -238,6 +248,60 @@ def test_modify_instance_attribute_is_only_shutdown_behavior():
     assert sids.index("SetShutdownBehaviorOnTaggedGameInstance") < sids.index(
         "PassGameRoleToEc2Only"
     )
+
+
+def test_ssm_run_command_is_tagged_instances_and_one_document():
+    policy = _policy()
+    by_sid = {statement["Sid"]: statement for statement in policy["Statement"]}
+    instance = by_sid["SendCommandToTaggedGameInstance"]
+    assert instance["Effect"] == "Allow"
+    assert instance["Action"] == "ssm:SendCommand"
+    assert instance["Resource"] == "arn:aws:ec2:us-east-2:000000000000:instance/*"
+    assert instance["Condition"]["StringEquals"] == {
+        "aws:RequestedRegion": "us-east-2",
+        "aws:ResourceTag/Project": "dutch-blitz",
+    }
+    document = by_sid["SendCommandWithRunShellScript"]
+    assert document["Action"] == "ssm:SendCommand"
+    assert document["Resource"] == "arn:aws:ssm:us-east-2::document/AWS-RunShellScript"
+    assert document["Condition"]["StringEquals"] == {"aws:RequestedRegion": "us-east-2"}
+    reads = by_sid["ReadSsmCommandResults"]
+    assert set(reads["Action"]) == {
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:DescribeInstanceInformation",
+    }
+    assert reads["Resource"] == "*"
+    assert reads["Condition"]["StringEquals"] == {"aws:RequestedRegion": "us-east-2"}
+    actions = _actions(policy)
+    assert "ssm:StartSession" not in actions
+    assert "ssm:*" not in actions
+    assert "ssm:PutParameter" not in actions
+    assert "key-pair/" not in POLICY_PATH.read_text(encoding="utf-8")
+    sids = [item["Sid"] for item in policy["Statement"]]
+    assert sids.index("ReadSsmCommandResults") < sids.index("PassGameRoleToEc2Only")
+    bot = (REPO / "docs" / "bot-iam.md").read_text(encoding="utf-8")
+    assert "lets the bot run root commands on tagged instances" in bot
+
+
+def test_game_role_ssm_is_an_inline_subset():
+    role = (REPO / "terraform" / "game-role" / "main.tf").read_text(encoding="utf-8")
+    assert "AmazonSSMManagedInstanceCore" in role
+    assert "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" not in role
+    assert "ssm:UpdateInstanceInformation" in role
+    assert "ssmmessages:CreateControlChannel" in role
+    assert "ssmmessages:CreateDataChannel" in role
+    assert "ssmmessages:OpenControlChannel" in role
+    assert "ssmmessages:OpenDataChannel" in role
+    assert "ec2messages:AcknowledgeMessage" in role
+    assert "ec2messages:GetMessages" in role
+    assert "ec2messages:SendReply" in role
+    assert "ssm:GetDocument" in role
+    assert "document/AWS-RunShellScript" in role
+    assert "ssm:GetParameter" not in role
+    assert "ssm:GetParameters" not in role
+    assert 'actions   = ["ssm:StartSession"]' not in role
+    assert "ssm:StartSession" in role
 
 
 def _lock_provider_block(text: str, name: str) -> str:
@@ -363,10 +427,11 @@ def test_backup_bucket_refresh_reads_are_scoped_to_that_bucket():
 def test_instance_tags_the_volume_without_replacing_it():
     night = (REPO / "terraform" / "main.tf").read_text(encoding="utf-8")
     assert "volume_tags = {" in night
-    assert re.search(r"user_data\s+=\s+local\.user_data", night)
+    assert re.search(r"user_data\s+=\s+local\.boot_script", night)
     assert "user_data_replace_on_change = false" in night
-    assert "ignore_changes = [user_data]" in night
-    assert "ssh_authorized_keys" in night
+    assert "ignore_changes = [user_data, key_name]" in night
+    assert "ssh_authorized_keys" not in night
+    assert 'resource "aws_security_group_rule" "ssh"' not in night
     assert 'templatefile("${path.module}/templates/cloud-init.sh.tftpl"' in night
     start = night.index("root_block_device {")
     block = night[start : night.index("\n  }", start)]

@@ -37,8 +37,7 @@
         "arn:aws:ec2:${aws_region}:${aws_account_id}:subnet/*",
         "arn:aws:ec2:${aws_region}::image/*",
         "arn:aws:ec2:${aws_region}:${aws_account_id}:image/*",
-        "arn:aws:ec2:${aws_region}::snapshot/*",
-        "arn:aws:ec2:${aws_region}:${aws_account_id}:key-pair/${key_name}"
+        "arn:aws:ec2:${aws_region}::snapshot/*"
       ],
       "Condition": {
         "StringEquals": {
@@ -127,6 +126,44 @@
           "aws:RequestedRegion": "${aws_region}",
           "aws:ResourceTag/Project": "dutch-blitz",
           "ec2:Attribute/InstanceInitiatedShutdownBehavior": "terminate"
+        }
+      }
+    },
+    {
+      "Sid": "SendCommandToTaggedGameInstance",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ec2:${aws_region}:${aws_account_id}:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${aws_region}",
+          "aws:ResourceTag/Project": "dutch-blitz"
+        }
+      }
+    },
+    {
+      "Sid": "SendCommandWithRunShellScript",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ssm:${aws_region}::document/AWS-RunShellScript",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${aws_region}"
+        }
+      }
+    },
+    {
+      "Sid": "ReadSsmCommandResults",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:DescribeInstanceInformation"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${aws_region}"
         }
       }
     },
