@@ -182,17 +182,17 @@ data "aws_iam_policy_document" "idle_topic" {
 
   statement {
     sid = "AllowAccountToManageIdleTopic"
+    # Topic policies only accept topic-scoped actions (the same set as the
+    # AWS default policy). Unsubscribe, subscription attributes, and tag
+    # actions are rejected with "action out of service scope".
     actions = [
       "sns:GetTopicAttributes",
       "sns:SetTopicAttributes",
       "sns:DeleteTopic",
+      "sns:AddPermission",
+      "sns:RemovePermission",
       "sns:Subscribe",
-      "sns:Unsubscribe",
-      "sns:GetSubscriptionAttributes",
       "sns:ListSubscriptionsByTopic",
-      "sns:TagResource",
-      "sns:UntagResource",
-      "sns:ListTagsForResource",
       "sns:Publish",
     ]
     principals {
