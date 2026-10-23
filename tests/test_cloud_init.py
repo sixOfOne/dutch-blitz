@@ -86,7 +86,8 @@ def test_rendered_boot_script_pins_the_image_and_keeps_tls_and_backups():
     assert "reverse_proxy 127.0.0.1:8000" in script
     assert "/var/log/caddy/access.log" in script
     assert "PasswordAuthentication" not in script
-    assert "sshd" not in script
+    assert "systemctl disable --now sshd" in script
+    assert "sshd_config" not in script
     assert "read_configure_env" in script
     assert "/etc/dutch-blitz/configure.env" in script
     assert "systemctl enable --now amazon-ssm-agent" in script
