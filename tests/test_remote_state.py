@@ -223,7 +223,7 @@ def test_modify_instance_attribute_is_only_shutdown_behavior():
     assert statement["Condition"]["StringEquals"] == {
         "aws:RequestedRegion": "us-east-2",
         "aws:ResourceTag/Project": "dutch-blitz",
-        "ec2:Attribute": "instanceInitiatedShutdownBehavior",
+        "ec2:Attribute/InstanceInitiatedShutdownBehavior": "terminate",
     }
     actions = _actions(policy)
     assert "ec2:ModifyInstanceAttribute" in actions
