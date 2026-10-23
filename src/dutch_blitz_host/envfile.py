@@ -52,9 +52,7 @@ def bypass_enabled(value: str | None) -> bool:
 
 def assert_deployable(env: Mapping[str, str]) -> None:
     if bypass_enabled(env.get("CLERK_DEV_BYPASS")):
-        raise SystemExit(
-            "CLERK_DEV_BYPASS is on. Turn it off before hosting a game night."
-        )
+        raise SystemExit("CLERK_DEV_BYPASS is on. Turn it off before hosting a game night.")
     publishable = (env.get("CLERK_PUBLISHABLE_KEY") or "").strip()
     secret = (env.get("CLERK_SECRET_KEY") or "").strip()
     if not publishable or not secret:

@@ -1,7 +1,7 @@
 """Turn a stored game into the text and totals shown on the page."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.decks import deck_face
 from app.scoring import add_round, outcome
@@ -41,13 +41,13 @@ def format_parts(dutch_cards: int, blitz_left: int) -> str:
 
 def format_timestamp(value: str) -> str:
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return value
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     else:
-        parsed = parsed.astimezone(timezone.utc)
+        parsed = parsed.astimezone(UTC)
     hour = parsed.hour % 12 or 12
     suffix = "AM" if parsed.hour < 12 else "PM"
     return (
@@ -75,7 +75,9 @@ class StatusLine:
     state_label: str
 
 
-def describe(names_in_seat_order: list[str], totals: dict[str, int], target: int, round_count: int) -> StatusLine:
+def describe(
+    names_in_seat_order: list[str], totals: dict[str, int], target: int, round_count: int
+) -> StatusLine:
     if round_count == 0:
         return StatusLine(
             finished=False,
@@ -213,7 +215,9 @@ def present(game: Game) -> GameView:
         game.target_score,
         len(game.rounds),
     )
-    show_lead = bool(game.rounds) and not status.finished and len(status.leaders) < len(game.players)
+    show_lead = (
+        bool(game.rounds) and not status.finished and len(status.leaders) < len(game.players)
+    )
     players = []
     for player in game.players:
         if status.finished and player.name in status.winners:

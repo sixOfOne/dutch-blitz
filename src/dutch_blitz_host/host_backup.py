@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dutch_blitz_host.backup import (
@@ -40,7 +40,7 @@ def backup_database() -> int:
         print("No local score database yet; nothing to upload.")
         return 0
     bucket = _bucket()
-    name = backup_object_name(datetime.now(timezone.utc))
+    name = backup_object_name(datetime.now(UTC))
     remote = s3_uri(bucket, BACKUP_PREFIX, name)
     with tempfile.TemporaryDirectory(prefix="dutch-blitz-backup-") as directory:
         snapshot = Path(directory) / name
@@ -55,6 +55,7 @@ def restore_database() -> int:
     bucket = _bucket()
     result = subprocess.run(
         s3_ls_argv(bucket, BACKUP_PREFIX),
+        check=False,
         text=True,
         capture_output=True,
     )
@@ -65,7 +66,9 @@ def restore_database() -> int:
         return 0
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
-        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )
     listing = result.stdout
     name = latest_backup_name(listing)
     if name is None:

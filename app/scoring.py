@@ -13,9 +13,9 @@ Card counts follow a physical Dutch Blitz deck: the Blitz pile is 10 cards, and
 a player deck is 40 cards, so Dutch cards are 0–40 and Blitz cards left are 0–10.
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-import re
 
 from app.errors import ScoringError
 
@@ -56,7 +56,11 @@ def round_score(dutch_cards: int, blitz_left: int) -> int:
 
 
 def validate_target(target: int) -> int:
-    if isinstance(target, bool) or not isinstance(target, int) or not MIN_TARGET <= target <= MAX_TARGET:
+    if (
+        isinstance(target, bool)
+        or not isinstance(target, int)
+        or not MIN_TARGET <= target <= MAX_TARGET
+    ):
         raise ScoringError(
             f"Target score must be a whole number from {MIN_TARGET} to {MAX_TARGET}."
         )
@@ -119,11 +123,11 @@ def add_round(totals: dict, scores: dict) -> dict:
     if set(scores) != set(totals):
         raise ScoringError("Scores must include every player exactly once.")
     updated = {}
-    for name in totals:
+    for name, total in totals.items():
         score = scores[name]
         if isinstance(score, bool) or not isinstance(score, int):
             raise ScoringError("Round scores must be whole numbers.")
-        updated[name] = totals[name] + score
+        updated[name] = total + score
     return updated
 
 

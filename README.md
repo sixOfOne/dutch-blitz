@@ -47,10 +47,10 @@ The tests cover negative round scores, running totals, the default target and a 
 
 Every pull request, and every push to `main`, runs the [CI workflow](.github/workflows/ci.yml). A failure shows up on the pull request. The workflow has no Clerk keys and no AWS credentials. It does not run `terraform plan` or `terraform apply`, and it does not create resources.
 
-Two checks run in parallel:
+Two checks run in parallel. The names are the job names, so a ruleset that already requires them does not need a new check:
 
-- **Python tests** runs the suite on Python 3.11, the version the game-night host installs. pip caches the wheels from `requirements.txt` and `requirements-dev.txt`.
-- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then runs `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, `terraform/iam-bot/`, and `terraform/game-role/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. It parses `ansible/playbook.yml` with `--syntax-check` against `ansible/inventory/syntax-check.yml`, then runs `ansible-lint`. That inventory is only a stand-in. The real one is written on a game night and is gitignored.
+- **Python tests** runs on Python 3.11, the version the game-night host installs. pip caches the wheels from `requirements.txt` and `requirements-dev.txt`. It runs `ruff check`, `ruff format --check`, and `mypy` (configured in `pyproject.toml`), then the suite.
+- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then `tflint` (`.tflint.hcl`, no AWS calls), then `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, `terraform/iam-bot/`, and `terraform/game-role/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. It parses `ansible/playbook.yml` with `--syntax-check` against `ansible/inventory/syntax-check.yml`, then runs `ansible-lint`. That inventory is only a stand-in. The real one is written on a game night and is gitignored.
 
 A newer push to the same branch cancels the run that is still going, so an outdated commit does not spend the rest of its minutes.
 
@@ -58,9 +58,14 @@ Run the same checks from the repository root. Terraform 1.10 or newer is require
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
+ruff check app src tests
+ruff format --check app src tests
+mypy
 pytest
 
 terraform fmt -check -diff -recursive
+tflint --init
+tflint --recursive --config="$(pwd)/.tflint.hcl"
 terraform -chdir=terraform init -backend=false -input=false
 terraform -chdir=terraform validate -var=enable_aws=false
 terraform -chdir=terraform/backup init -backend=false -input=false
@@ -364,7 +369,8 @@ docs/remote-state.md  one-time migration from local tfstate
 docs/bot-iam.md    what the bot may do, and what could not be scoped tightly
 docs/repo-security.md  GitHub settings to turn on by hand, and what each one stops
 ansible/           install, Caddy, sshd, backup timer, idle shutdown timer
-.github/workflows/ci.yml  tests and static infrastructure checks
+.github/workflows/ci.yml  tests, ruff, mypy, and static infrastructure checks
+AGENTS.md          rules a coding agent follows before finishing
 .github/dependabot.yml  weekly pull requests for dependency updates
 SECURITY.md        how to report a vulnerability in private
 tests/             pytest

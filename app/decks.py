@@ -206,10 +206,7 @@ def assign_decks(
     cleaned = validate_players(raw)
     resolved = [clean_deck(color, icon) for color, icon in zip(color_list, icon_list, strict=True)]
     _reject_duplicate_colors(resolved)
-    return [
-        (name, color, icon)
-        for name, (color, icon) in zip(cleaned, resolved, strict=True)
-    ]
+    return [(name, color, icon) for name, (color, icon) in zip(cleaned, resolved, strict=True)]
 
 
 def clean_deck(color: str | None, icon: str | None) -> tuple[str | None, str | None]:

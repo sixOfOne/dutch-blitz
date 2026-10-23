@@ -8,7 +8,7 @@ Sign in as the owner of [sixOfOne/dutch-blitz](https://github.com/sixOfOne/dutch
 
 A branch ruleset on `main` stops a direct push. Changes arrive as a pull request, and the pull request cannot merge until the two CI checks have passed. The branch also cannot be deleted or force-pushed.
 
-That protects against a push straight to `main` that skipped the tests, a `git push --force` that throws away history, and someone deleting `main`. The two checks are the job names in `.github/workflows/ci.yml`: **Python tests** and **Terraform and Ansible**.
+That protects against a push straight to `main` that skipped the tests, a `git push --force` that throws away history, and someone deleting `main`. The two checks are the job names in `.github/workflows/ci.yml`: **Python tests** and **Terraform and Ansible**. Python tests also runs ruff and mypy. Terraform and Ansible also runs tflint. Those tools are steps inside the two jobs, not extra check names, so this list does not grow when they are added.
 
 Leave admin bypass on. You are the only maintainer. Bypass means you, as repository admin, can still push to `main`, force-push, delete the branch, or merge a pull request while a check is red. That is the escape hatch when a check is broken and the fix has to land, or when you need to revert in a hurry. The cost is that the rule does not apply to you. It also does not stop an attacker who has stolen your admin credentials. A token that can write to the repo but is not an admin still has to open a pull request and pass both checks.
 

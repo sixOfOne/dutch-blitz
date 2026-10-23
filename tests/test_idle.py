@@ -1,6 +1,6 @@
 """Idle and uptime decisions. No AWS, no network, no systemd."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,19 +31,24 @@ from dutch_blitz_host.idle import (
 from tests.fakes import FakeVerifier
 
 LIMITS = Limits()
-NOW = datetime(2026, 10, 12, 1, 0, tzinfo=timezone.utc).timestamp()
+NOW = datetime(2026, 10, 12, 1, 0, tzinfo=UTC).timestamp()
 
 
-def snap(**overrides) -> Snapshot:
-    base = dict(
-        uptime_minutes=10,
-        idle_minutes=0,
-        extra_uptime_minutes=0,
-        idle_warned=False,
-        uptime_warned=False,
+def snap(
+    *,
+    uptime_minutes: float = 10,
+    idle_minutes: float = 0,
+    extra_uptime_minutes: float = 0,
+    idle_warned: bool = False,
+    uptime_warned: bool = False,
+) -> Snapshot:
+    return Snapshot(
+        uptime_minutes=uptime_minutes,
+        idle_minutes=idle_minutes,
+        extra_uptime_minutes=extra_uptime_minutes,
+        idle_warned=idle_warned,
+        uptime_warned=uptime_warned,
     )
-    base.update(overrides)
-    return Snapshot(**base)
 
 
 def test_format_minutes_rounds_down():
@@ -125,7 +130,9 @@ def test_both_clocks_at_once_shutdown_beats_a_warning():
 
 
 def test_snooze_adds_time_to_uptime_only():
-    snoozed = apply_snooze({"extra_uptime_minutes": 0, "idle_warned": True, "uptime_warned": True}, LIMITS)
+    snoozed = apply_snooze(
+        {"extra_uptime_minutes": 0, "idle_warned": True, "uptime_warned": True}, LIMITS
+    )
     assert snoozed["extra_uptime_minutes"] == 120
     assert snoozed["uptime_warned"] is False
     assert snoozed["idle_warned"] is True
@@ -157,7 +164,9 @@ def test_a_second_snooze_stacks():
     once = apply_snooze({}, LIMITS)
     twice = apply_snooze(once, LIMITS)
     assert twice["extra_uptime_minutes"] == 240
-    deadline = decide(snap(uptime_minutes=11 * 60, extra_uptime_minutes=240, idle_minutes=0), LIMITS)
+    deadline = decide(
+        snap(uptime_minutes=11 * 60, extra_uptime_minutes=240, idle_minutes=0), LIMITS
+    )
     assert deadline.action == "warn"
     assert deadline.uptime_deadline_minutes == 12 * 60
 
@@ -354,14 +363,12 @@ def test_shutdown_runs_only_after_a_successful_backup_even_if_email_fails():
 
 
 def test_caddy_log_ignores_acme_and_a_partial_last_line():
-    text = "\n".join(
-        [
-            '{"ts": 100.5, "request": {"uri": "/.well-known/acme-challenge/token"}}',
-            '{"ts": 200, "request": {"uri": "/games/1"}}',
-            '{"ts": 1700000000000, "request": {"uri": "/games/1?x=1"}}',
-            '{"ts": 1700000000000000000, "request": {"uri": "/"}}',
-            '{"ts":',
-        ]
+    text = (
+        '{"ts": 100.5, "request": {"uri": "/.well-known/acme-challenge/token"}}\n'
+        '{"ts": 200, "request": {"uri": "/games/1"}}\n'
+        '{"ts": 1700000000000, "request": {"uri": "/games/1?x=1"}}\n'
+        '{"ts": 1700000000000000000, "request": {"uri": "/"}}\n'
+        '{"ts":'
     )
     # The nanosecond line is the newest real request. The millisecond line
     # is earlier. The broken tail is ignored. ACME is ignored.
@@ -375,8 +382,12 @@ def test_requests_from_before_this_boot_do_not_count():
     assert latest_request_epoch([boot - 10_000, None], boot_epoch=boot) is None
     assert latest_request_epoch([boot - 10_000, boot + 50], boot_epoch=boot) == boot + 50
     # No request this boot: idle equals uptime.
-    assert idle_minutes(now=boot + 600, boot_epoch=boot, last_request_epoch=None) == pytest.approx(10)
-    assert idle_minutes(now=boot + 600, boot_epoch=boot, last_request_epoch=boot + 300) == pytest.approx(5)
+    assert idle_minutes(now=boot + 600, boot_epoch=boot, last_request_epoch=None) == pytest.approx(
+        10
+    )
+    assert idle_minutes(
+        now=boot + 600, boot_epoch=boot, last_request_epoch=boot + 300
+    ) == pytest.approx(5)
 
 
 def test_observe_uses_the_newer_of_caddy_and_the_app_stamp():

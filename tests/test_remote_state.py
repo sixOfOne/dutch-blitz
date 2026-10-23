@@ -95,7 +95,9 @@ def _render(values: dict[str, str]) -> str:
     missing = found - values.keys()
     extra = values.keys() - found
     if missing or extra:
-        raise AssertionError(f"template vars mismatch missing={sorted(missing)} extra={sorted(extra)}")
+        raise AssertionError(
+            f"template vars mismatch missing={sorted(missing)} extra={sorted(extra)}"
+        )
 
     def repl(match: re.Match[str]) -> str:
         return values[match.group(1)]
@@ -281,7 +283,7 @@ def test_backup_bucket_refresh_reads_are_scoped_to_that_bucket():
     writes = {
         action
         for action in manage["Action"]
-        if action.startswith("s3:Put") or action.startswith("s3:Delete") or action == "s3:CreateBucket"
+        if action.startswith(("s3:Put", "s3:Delete")) or action == "s3:CreateBucket"
     }
     assert writes == {
         "s3:CreateBucket",
@@ -342,7 +344,9 @@ def test_every_root_uses_s3_lockfiles_and_ci_skips_the_backend():
         assert "encrypt" in text
         assert "dynamodb_table" not in text
         assert "dynamodb:" not in text
-        assert root in workflow or (root == "terraform" and "terraform terraform/backup" in workflow)
+        assert root in workflow or (
+            root == "terraform" and "terraform terraform/backup" in workflow
+        )
     assert "terraform/state" in workflow
     assert "terraform/iam-bot" in workflow
     assert "terraform/game-role" in workflow
