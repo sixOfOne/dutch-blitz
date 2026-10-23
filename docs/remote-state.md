@@ -17,7 +17,7 @@ DynamoDB is not used. It was the lock table for older Terraform. This repo's CI 
 | `terraform/state/bootstrap_override.tf` | no | Temporary `backend "local" {}` so the first apply has a backend. `*_override.tf` is gitignored. Delete it before migrating. |
 | `*.tfstate` | no | Already gitignored. Keep the old ones as backups after migration. |
 
-The five keys, all in that one bucket:
+The six keys, all in that one bucket:
 
 | Root | Key |
 | --- | --- |
@@ -26,8 +26,9 @@ The five keys, all in that one bucket:
 | `terraform/backup` | `dutch-blitz/backup/terraform.tfstate` |
 | `terraform/iam-bot` | `dutch-blitz/iam-bot/terraform.tfstate` |
 | `terraform/game-role` | `dutch-blitz/game-role/terraform.tfstate` |
+| `terraform/gha-deployer` | `dutch-blitz/gha-deployer/terraform.tfstate` |
 
-The bot user can read and write the game-night and backup keys, and their `.tflock` objects. It cannot read the other three. Those hold the bucket configuration, the budget email, and the instance role's policy document. The game-role state also holds the idle-shutdown SNS subscription, which includes `alert_email`. Apply `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own credentials. `up` applies the backup root and the game-night root. It does not apply the role.
+The bot user, and the GitHub deployer role that attaches the same policies, can read and write the game-night and backup keys, and their `.tflock` objects. They cannot read the other four. Those hold the bucket configuration, the budget email, the instance role's policy document, and the deployer role's trust policy. The game-role state also holds the idle-shutdown SNS subscription, which includes `alert_email`. Apply `terraform/state`, `terraform/iam-bot`, `terraform/game-role`, and `terraform/gha-deployer` with your own credentials. `up` applies the backup root and the game-night root. It does not apply the role or the deployer.
 
 ## One-time migration
 
@@ -208,7 +209,7 @@ The CLI does not pass `-migrate-state`. After you pull this change, the first `u
 
 ## What CI does
 
-CI runs `terraform init -backend=false` and `terraform validate -var=enable_aws=false` in all five roots (`terraform/`, `terraform/backup`, `terraform/state`, `terraform/iam-bot`, `terraform/game-role`). `-backend=false` skips the S3 block, so the job never reads `backend.hcl` and never calls AWS. The workflow has no credentials. That flag is for `validate`. It does not initialize a backend, so it is not the bootstrap in step 3. `apply`, `plan`, and `state list` after it stop with `Backend initialization required`.
+CI runs `terraform init -backend=false` and `terraform validate -var=enable_aws=false` in all six roots (`terraform/`, `terraform/backup`, `terraform/state`, `terraform/iam-bot`, `terraform/game-role`, `terraform/gha-deployer`). `-backend=false` skips the S3 block, so the job never reads `backend.hcl` and never calls AWS. The workflow has no credentials. That flag is for `validate`. It does not initialize a backend, so it is not the bootstrap in step 3. `apply`, `plan`, and `state list` after it stop with `Backend initialization required`.
 
 ## Two machines at once
 

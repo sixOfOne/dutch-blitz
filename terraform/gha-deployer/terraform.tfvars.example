@@ -1,0 +1,17 @@
+# Copy to terraform/gha-deployer/terraform.tfvars (gitignored) and edit.
+# Apply this stack yourself, with your own credentials, after
+# terraform/iam-bot. The workflow cannot apply this root. See the
+# Game night button section of the README.
+
+enable_aws = true
+aws_region = "us-east-2"
+
+# Leave empty to create the provider for
+# token.actions.githubusercontent.com. If the account already has one,
+# set that ARN (aws iam list-open-id-connect-providers). A second
+# provider for the same URL fails.
+github_oidc_provider_arn = ""
+
+# Must match the user terraform/iam-bot applied. The policies are
+# <this name>-compute and <this name>-records.
+bot_user_name = "grok-bot-dutch-blitz"

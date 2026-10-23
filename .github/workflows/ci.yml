@@ -212,7 +212,7 @@ jobs:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/terraform-plugin-cache
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
-          for dir in terraform terraform/backup terraform/state terraform/iam-bot terraform/game-role; do
+          for dir in terraform terraform/backup terraform/state terraform/iam-bot terraform/game-role terraform/gha-deployer; do
             terraform -chdir="$dir" init -backend=false -input=false -no-color
             terraform -chdir="$dir" validate -no-color -var=enable_aws=false
           done

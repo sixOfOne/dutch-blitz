@@ -50,7 +50,7 @@ Every pull request, and every push to `main`, runs the [CI workflow](.github/wor
 Two checks run in parallel. The names are the job names, so a ruleset that already requires them does not need a new check:
 
 - **Python tests** runs on Python 3.11, the version in the game-night image. pip caches the wheels from `requirements.txt`, `requirements-dev.txt`, and `requirements-host.txt` (boto3, for the controller's SSM client). It runs `ruff check`, `ruff format --check`, and `mypy` (configured in `pyproject.toml`), then the suite.
-- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then `tflint` (`.tflint.hcl`, no AWS calls), then `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, `terraform/iam-bot/`, and `terraform/game-role/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. The job name still says Ansible so the branch ruleset does not have to change. Ansible itself is gone. The host boots a container from cloud-init. Image builds are a separate workflow, [image.yml](.github/workflows/image.yml), and only run when the app, the Dockerfile, or the host package changed. That workflow is not a required check.
+- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then `tflint` (`.tflint.hcl`, no AWS calls), then `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, `terraform/iam-bot/`, `terraform/game-role/`, and `terraform/gha-deployer/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. The job name still says Ansible so the branch ruleset does not have to change. Ansible itself is gone. The host boots a container from cloud-init. Image builds are a separate workflow, [image.yml](.github/workflows/image.yml), and only run when the app, the Dockerfile, or the host package changed. That workflow is not a required check. The Game night workflow is also separate. It is `workflow_dispatch` only, and CI does not run it.
 
 A newer push to the same branch cancels the run that is still going, so an outdated commit does not spend the rest of its minutes.
 
@@ -76,6 +76,8 @@ terraform -chdir=terraform/iam-bot init -backend=false -input=false
 terraform -chdir=terraform/iam-bot validate -var=enable_aws=false
 terraform -chdir=terraform/game-role init -backend=false -input=false
 terraform -chdir=terraform/game-role validate -var=enable_aws=false
+terraform -chdir=terraform/gha-deployer init -backend=false -input=false
+terraform -chdir=terraform/gha-deployer validate -var=enable_aws=false
 ```
 
 ## Repository security
@@ -289,7 +291,7 @@ PYTHONPATH=src python3 -m dutch_blitz_host up
 PYTHONPATH=src python3 -m dutch_blitz_host down
 ```
 
-Leave `DUTCH_BLITZ_DNS_MODE` unset on the Mac. Port 53 there is the default. Your Mac does not set the bot profile. You keep applying `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own user. The bot is denied those actions. `up` applies the backup bucket and the game-night instance. It does not apply the role. Apply `terraform/iam-bot` again with your own credentials after the bot policy changes. Until that apply, `SendCommand` stays denied and the bot's refresh of the backup bucket stays denied. Apply `terraform/game-role` as well so the instance role can register with SSM. `ssm:SendCommand` lets the bot run root commands on instances tagged `Project=dutch-blitz`. It does not grant `ssm:StartSession`.
+Leave `DUTCH_BLITZ_DNS_MODE` unset on the Mac. Port 53 there is the default. Your Mac does not set the bot profile. You keep applying `terraform/state`, `terraform/iam-bot`, `terraform/game-role`, and `terraform/gha-deployer` with your own user. The bot is denied those actions. `up` applies the backup bucket and the game-night instance. It does not apply the role or the deployer. Apply `terraform/iam-bot` again with your own credentials after the bot policy changes. Until that apply, `SendCommand` stays denied and the bot's refresh of the backup bucket stays denied. Apply `terraform/game-role` as well so the instance role can register with SSM. `ssm:SendCommand` lets the bot, and the GitHub deployer that attaches the same policies, run root commands on instances tagged `Project=dutch-blitz`. It does not grant `ssm:StartSession`.
 
 An IAM user can hold two access keys. Rotate without a gap:
 
@@ -319,6 +321,37 @@ terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
 ```
 
 `down` never runs that command. `--skip-backup` exists for a host that is already gone; scores saved after the last upload are not copied.
+
+## Game night button
+
+[`.github/workflows/game-night.yml`](.github/workflows/game-night.yml) is the Actions button named **Game night**. It runs `dutch_blitz_host` with `up`, `down`, `backup`, or `status`. It stores no AWS access key. GitHub's OIDC token assumes `dutch-blitz-gha-deployer`, and that role attaches the same two managed policies as `grok-bot-dutch-blitz`. The session lasts at most one hour. The workflow's top-level permissions are empty. The job has `id-token: write` and `contents: read`.
+
+The role trusts `token.actions.githubusercontent.com` only when every one of these is exact: `aud` is `sts.amazonaws.com`, `sub` is `repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night`, `event_name` is `workflow_dispatch`, `ref` is `refs/heads/main`, and `workflow_ref` is `sixOfOne/dutch-blitz/.github/workflows/game-night.yml@refs/heads/main`. This repository was created on 2026-10-10 and GitHub sets `use_immutable_subject`, so the token `sub` carries the owner id `50211093` and the repository id `1413603165`. Leave that string as it is. A `pull_request` run is a different `event_name` and cannot assume the role.
+
+Do these steps yourself, in this order, after this change is on `main`. Do not use the bot access key.
+
+1. Confirm `terraform/iam-bot` is already applied, so the managed policies `grok-bot-dutch-blitz-compute` and `grok-bot-dutch-blitz-records` exist. This root only attaches them. If you renamed the bot user, the name in the next file has to match.
+2. On the Mac, with your own AWS credentials, copy the example and set `enable_aws = true`. If the account already has an OIDC provider for `token.actions.githubusercontent.com`, set `github_oidc_provider_arn` to that ARN (`aws iam list-open-id-connect-providers`). Leave it empty and apply creates the provider. A second provider for the same URL fails.
+
+```bash
+cp terraform/gha-deployer/terraform.tfvars.example terraform/gha-deployer/terraform.tfvars
+terraform -chdir=terraform/gha-deployer init -backend-config=../backend.hcl
+terraform -chdir=terraform/gha-deployer apply -var-file=terraform.tfvars
+```
+
+3. Read the `role_arn` output. It looks like `arn:aws:iam::<account>:role/dutch-blitz-gha-deployer`.
+4. On GitHub, open **Settings → Environments → New environment**. Name it exactly `game-night`.
+5. Turn on **Required reviewers** and add yourself. Save before any workflow run. A first run that creates the environment for you is not reviewed.
+6. Under **Deployment branches**, choose **Selected branches** and add `main`.
+7. On that environment, add a **variable** (not a secret) named `AWS_ROLE_ARN`. The value is the `role_arn` from step 3.
+8. On that environment, add these **secrets**. GitHub masks them. The workflow writes the two files under the runner temp directory, mode `0600`, and does not echo them. Leave `app_image` and both Clerk keys out of `TERRAFORM_TFVARS`. The workflow sets `TF_VAR_app_image` to the `sha-` tag of `origin/main`, or to the optional image input.
+   - `CLERK_PUBLISHABLE_KEY`
+   - `CLERK_SECRET_KEY`
+   - `TERRAFORM_TFVARS`: the body of the gitignored `terraform/terraform.tfvars`
+   - `BACKEND_HCL`: the body of the gitignored `terraform/backend.hcl`
+9. **Actions → Game night → Run workflow**. Branch `main`, action `status`. Approve the review when GitHub asks. Then `up`, `backup`, or `down` the same way. One run at a time: a second click waits, and it does not cancel the run that is already going. The job limit is 50 minutes, inside the one-hour role session.
+
+`status` prints the public outputs and the SSM ping. It does not print `cloud_init`. A change to `docs/grok-bot-dutch-blitz-policy.json` is applied with `terraform/iam-bot` only. The deployer role uses those same policies, so it sees the new document without another apply here. Re-apply `terraform/gha-deployer` when the trust policy or the OIDC provider setting changes. `ssm:SendCommand` on this role runs root commands on instances tagged `Project=dutch-blitz`, the same as the bot. There is no `ssm:StartSession`.
 
 `terraform.tfvars`, `app.auto.tfvars`, `backend.hcl`, Terraform state, `.env`, and `*.pem` files are gitignored. The example tfvars and `backend.hcl.example` have placeholders only. Clerk keys are in the instance user data and in the Terraform state object. The state bucket is private. Do not put the keys in a file you might commit.
 
@@ -366,12 +399,14 @@ terraform/         EC2 host, cloud-init, and blitz A record, destroyed by down; 
 terraform/templates/cloud-init.sh.tftpl  boot script Terraform renders into user data
 terraform/backup/  S3 snapshot bucket, kept across nights
 terraform/game-role/ instance role, instance profile, and idle SNS topic (you apply this; down does not)
+terraform/gha-deployer/ GitHub OIDC deployer role for the Game night workflow (you apply this)
 terraform/state/   bootstrap bucket for Terraform state (you apply this)
 terraform/iam-bot/ bot user, least-privilege policy, and $10 budget (you apply this)
 docs/remote-state.md  one-time migration from local tfstate
 docs/bot-iam.md    what the bot may do, and what could not be scoped tightly
 docs/repo-security.md  GitHub settings to turn on by hand, and what each one stops
 .github/workflows/ci.yml  ruff, mypy, pytest, tflint, and terraform validate
+.github/workflows/game-night.yml  workflow_dispatch up, down, backup, and status
 .github/workflows/image.yml  build the image; push it on main
 .github/dependabot.yml  weekly pull requests for dependency updates
 SECURITY.md        how to report a vulnerability in private

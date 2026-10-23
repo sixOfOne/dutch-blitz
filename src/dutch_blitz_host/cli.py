@@ -1,4 +1,4 @@
-"""Game-night commands: apply, configure, backup, and destroy.
+"""Game-night commands: apply, configure, backup, status, and destroy.
 
 Local-first: with ``enable_aws`` left false, apply only records that AWS is
 off. A night sets ``enable_aws = true`` in the gitignored tfvars file.
@@ -59,6 +59,8 @@ except ImportError as exc:
     )
     raise SystemExit(1) from None
 
+from botocore.exceptions import ClientError
+
 from dutch_blitz_host.ssm import (
     BACKUP_COMMAND,
     BACKUP_TIMEOUT_SECONDS,
@@ -69,6 +71,7 @@ from dutch_blitz_host.ssm import (
     CommandResult,
     ConfigureOverrides,
     configure_shell,
+    describe_ping_status,
     run_shell_script,
     wait_for_ssm_online,
 )
@@ -133,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
     down.add_argument("--dry-run", action="store_true")
     down.add_argument("--skip-backup", action="store_true")
     _add_init(down)
+
+    status = subparsers.add_parser(
+        "status",
+        help="Print public Terraform outputs and the SSM ping. Does not print cloud_init.",
+    )
+    _add_init(status)
     return parser
 
 
@@ -159,10 +168,28 @@ def aws_enabled(tfvars: dict[str, str]) -> bool:
     return tfvars.get("enable_aws", "false").strip().lower() == "true"
 
 
-def load_tfvars(path: Path = TFVARS) -> dict[str, str]:
-    if not path.is_file():
+def _tfvars_file() -> Path:
+    """Shared tfvars path. ``DUTCH_BLITZ_TFVARS`` overrides the repo file.
+
+    The Game night workflow writes the secret tfvars under the runner
+    temp directory and points this variable at that file. An unset
+    variable keeps the gitignored ``terraform/terraform.tfvars``.
+    """
+    raw = os.environ.get("DUTCH_BLITZ_TFVARS", "").strip()
+    return Path(raw) if raw else TFVARS
+
+
+def _backend_file() -> Path:
+    """Partial backend path. ``DUTCH_BLITZ_BACKEND_CONFIG`` overrides it."""
+    raw = os.environ.get("DUTCH_BLITZ_BACKEND_CONFIG", "").strip()
+    return Path(raw) if raw else BACKEND_CONFIG
+
+
+def load_tfvars(path: Path | None = None) -> dict[str, str]:
+    chosen = _tfvars_file() if path is None else path
+    if not chosen.is_file():
         return {}
-    return parse_tfvars(path.read_text(encoding="utf-8"))
+    return parse_tfvars(chosen.read_text(encoding="utf-8"))
 
 
 def load_controller_env(repo_root: Path = REPO_ROOT) -> dict[str, str]:
@@ -198,20 +225,23 @@ def _terraform() -> str:
     return terraform
 
 
-def require_backend_config(path: Path = BACKEND_CONFIG) -> Path:
+def require_backend_config(path: Path | None = None) -> Path:
     """Return the gitignored backend file, or stop with a copy instruction.
 
     The bucket name cannot live in a committed backend block. Terraform
     reads that block before variables exist, so ``up`` and ``down`` pass
-    this file as ``-backend-config``.
+    this file as ``-backend-config``. ``DUTCH_BLITZ_BACKEND_CONFIG``
+    selects a file outside the checkout, which is where the Game night
+    workflow writes the secret.
     """
-    if not path.is_file():
+    chosen = _backend_file() if path is None else path
+    if not chosen.is_file():
         raise SystemExit(
             "Remote state is not configured. Copy terraform/backend.hcl.example "
             "to terraform/backend.hcl and set the state bucket name. "
             "That file is gitignored. The one-time migration is docs/remote-state.md."
         )
-    return path
+    return chosen
 
 
 def terraform_init_argv(terraform: str, backend_config: Path) -> list[str]:
@@ -264,6 +294,84 @@ def terraform_outputs(tf_dir: Path) -> dict[str, Any]:
         stderr=subprocess.PIPE,
     )
     return cast(dict[str, Any], json.loads(raw))
+
+
+_STATUS_OUTPUTS = (
+    "mode",
+    "instance_id",
+    "public_ip",
+    "hostname",
+    "public_url",
+    "dns_fqdn",
+    "backup_bucket",
+    "app_image",
+)
+
+
+def _terraform_output_raw(tf_dir: Path, name: str) -> str:
+    """One plain output. ``cloud_init`` is refused because it holds Clerk keys.
+
+    ``terraform output -raw`` on a null value exits non-zero. That is an
+    empty night field, so status prints it as unavailable. Any other
+    failure stops the command. The stderr is redacted before it is shown.
+    """
+    if name == "cloud_init":
+        raise SystemExit("Refusing to print cloud_init. It contains the Clerk keys.")
+    completed = subprocess.run(
+        [_terraform(), "output", "-raw", name],
+        cwd=str(tf_dir),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = f"{completed.stderr or ''}{completed.stdout or ''}"
+        if "null" in detail.lower():
+            return ""
+        cleaned = redact(
+            detail.strip(),
+            _secret_values(
+                {
+                    "CLERK_SECRET_KEY": os.environ.get("CLERK_SECRET_KEY", ""),
+                    "CLERK_PUBLISHABLE_KEY": os.environ.get("CLERK_PUBLISHABLE_KEY", ""),
+                }
+            ),
+        )
+        raise SystemExit(f"terraform output {name} failed: {cleaned}")
+    return completed.stdout.strip()
+
+
+def cmd_status(*, do_init: bool) -> int:
+    """Print the night's public outputs and whether the SSM agent answers.
+
+    This never requests ``cloud_init``. That output is the boot script,
+    and the boot script contains the Clerk keys.
+    """
+    tfvars = load_tfvars()
+    if not aws_enabled(tfvars):
+        print("enable_aws is false. There is no game-night instance to describe.")
+        return 0
+    code = _init_terraform(NIGHT_DIR, var_file=_tfvars_file(), do_init=do_init)
+    if code != 0:
+        return code
+    values = {name: _terraform_output_raw(NIGHT_DIR, name) for name in _STATUS_OUTPUTS}
+    for name in _STATUS_OUTPUTS:
+        shown = values[name] if values[name] else "unavailable"
+        print(f"{name}: {shown}")
+    instance_id = values["instance_id"]
+    if not valid_instance_id(instance_id):
+        print("ssm_ping: unavailable")
+        return 0
+    try:
+        ping = describe_ping_status(instance_id, _night_region(tfvars))
+    except ClientError as exc:
+        error = exc.response.get("Error", {})
+        raw_code = error.get("Code", "error") if isinstance(error, dict) else "error"
+        code_name = raw_code if isinstance(raw_code, str) and raw_code else "error"
+        print(f"ssm_ping: unavailable ({code_name})")
+        return 0
+    print(f"ssm_ping: {ping if ping else 'unavailable'}")
+    return 0
 
 
 def output_value(outputs: dict, name: str) -> str | None:
@@ -509,7 +617,7 @@ def cmd_configure(*, dry_run: bool) -> int:
         NIGHT_DIR,
         action="apply",
         do_init=False,
-        var_file=TFVARS,
+        var_file=_tfvars_file(),
         extra_env=clerk_terraform_env(env),
     )
     if code != 0:
@@ -582,7 +690,7 @@ def cmd_up(*, do_init: bool) -> int:
         )
     controller = load_controller_env()
     assert_deployable(controller)
-    code = cmd_terraform(BACKUP_DIR, action="apply", do_init=do_init, var_file=TFVARS)
+    code = cmd_terraform(BACKUP_DIR, action="apply", do_init=do_init, var_file=_tfvars_file())
     if code != 0:
         return code
     # The instance profile is not created here. terraform/game-role is
@@ -596,7 +704,7 @@ def cmd_up(*, do_init: bool) -> int:
         NIGHT_DIR,
         action="apply",
         do_init=do_init,
-        var_file=TFVARS,
+        var_file=_tfvars_file(),
         extra_env=clerk_terraform_env(controller),
     )
     if code != 0:
@@ -869,19 +977,21 @@ def cmd_destroy(*, dry_run: bool, skip_backup: bool, do_init: bool) -> int:
                 return code
     steps = destroy_plan(skip_backup=skip_backup, instance_gone=gone)
     print("Destroy plan:", ", ".join(steps))
-    return cmd_terraform(NIGHT_DIR, action="destroy", do_init=do_init, var_file=TFVARS)
+    return cmd_terraform(NIGHT_DIR, action="destroy", do_init=do_init, var_file=_tfvars_file())
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "up":
         return cmd_up(do_init=args.init)
+    if args.command == "status":
+        return cmd_status(do_init=args.init)
     if args.command == "apply":
         return cmd_terraform(
             NIGHT_DIR,
             action="plan" if args.dry_run else "apply",
             do_init=args.init,
-            var_file=TFVARS,
+            var_file=_tfvars_file(),
             extra_env=night_terraform_env(),
         )
     if args.command == "backup-apply":
@@ -889,7 +999,7 @@ def main(argv: list[str] | None = None) -> int:
             BACKUP_DIR,
             action="plan" if args.dry_run else "apply",
             do_init=args.init,
-            var_file=TFVARS,
+            var_file=_tfvars_file(),
         )
     if args.command == "configure":
         return cmd_configure(dry_run=args.dry_run)
