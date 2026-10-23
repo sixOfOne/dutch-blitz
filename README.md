@@ -37,7 +37,7 @@ uvicorn app.main:app --reload --reload-dir app
 ## Tests
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt -r requirements-host.txt
 pytest
 ```
 
@@ -49,7 +49,7 @@ Every pull request, and every push to `main`, runs the [CI workflow](.github/wor
 
 Two checks run in parallel. The names are the job names, so a ruleset that already requires them does not need a new check:
 
-- **Python tests** runs on Python 3.11, the version in the game-night image. pip caches the wheels from `requirements.txt` and `requirements-dev.txt`. It runs `ruff check`, `ruff format --check`, and `mypy` (configured in `pyproject.toml`), then the suite.
+- **Python tests** runs on Python 3.11, the version in the game-night image. pip caches the wheels from `requirements.txt`, `requirements-dev.txt`, and `requirements-host.txt` (boto3, for the controller's SSM client). It runs `ruff check`, `ruff format --check`, and `mypy` (configured in `pyproject.toml`), then the suite.
 - **Terraform and Ansible** checks formatting with `terraform fmt -check`, then `tflint` (`.tflint.hcl`, no AWS calls), then `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, `terraform/iam-bot/`, and `terraform/game-role/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. The job name still says Ansible so the branch ruleset does not have to change. Ansible itself is gone. The host boots a container from cloud-init. Image builds are a separate workflow, [image.yml](.github/workflows/image.yml), and only run when the app, the Dockerfile, or the host package changed. That workflow is not a required check.
 
 A newer push to the same branch cancels the run that is still going, so an outdated commit does not spend the rest of its minutes.
@@ -57,7 +57,7 @@ A newer push to the same branch cancels the run that is still going, so an outda
 Run the same checks from the repository root. Terraform 1.10 or newer is required, because the S3 backend locks state with `use_lockfile` (CI uses 1.16.5). Each root commits `.terraform.lock.hcl` for linux_amd64, darwin_arm64, and darwin_amd64. `terraform init` installs the locked providers. Dependabot's terraform entry updates those lock files when a release is inside the version constraint.
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt -r requirements-host.txt
 ruff check app src tests
 ruff format --check app src tests
 mypy
@@ -150,19 +150,23 @@ GitHub's documentation disagrees with itself about the first publish. The Action
 
 A night is one `t3.small` in `us-east-2` (Amazon Linux 2023) for a few hours, then the instance is deleted. Scores are copied to an S3 bucket that stays. Three hours is about **$0.10**: the instance is about $0.021 an hour, and the disk and a small SQLite upload add a few cents. The bucket is pennies a month and is not part of that teardown.
 
-From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.10 or newer. No extra Python package is required. The controller uses the standard library. 1.10 is the first release that locks S3 state with `use_lockfile`. CI uses 1.16.5. The computer that runs `up`, `configure`, `backup`, and `down` also needs an OpenSSH `ssh` client on `PATH`. Those commands shell out to `ssh` to reach `ec2-user` on the instance. The host does not install the app with Ansible. Cloud-init pulls a published image.
+From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.10 or newer and Python 3.11. The controller needs boto3 for SSM. The scorekeeper image does not install it. 1.10 is the first release that locks S3 state with `use_lockfile`. CI uses 1.16.5. `up`, `configure`, `backup`, and `down` do not use an `ssh` binary and do not need sudo on the controller. They call SSM with boto3. The host does not install the app with Ansible. Cloud-init pulls a published image.
+
+```bash
+pip install -r requirements-host.txt
+```
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 ```
 
-Edit the copy: set `ssh_ingress_cidr` to your public IP as a `/32`, and set `backup_bucket_name` to a globally unique name. Leave `enable_aws = true` until the night is over. Put `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the environment or in the gitignored `.env`. `CLERK_DEV_BYPASS` must be off or `up` refuses to run. Copy `terraform/app.auto.tfvars.example` to `terraform/app.auto.tfvars` and set `app_image` to the `sha-` tag or digest from the image workflow. Do not put `app_image` or the Clerk keys in `terraform.tfvars`. That file is shared with stacks that do not declare those variables, and the keys would be committed if that file were ever tracked. `up` passes the keys as `TF_VAR_clerk_publishable_key` and `TF_VAR_clerk_secret_key`.
+Edit the copy: set `backup_bucket_name` to a globally unique name. Leave `enable_aws = true` until the night is over. `key_name`, `ssh_ingress_cidr`, `ssh_ingress_cidrs`, and `extra_ssh_public_keys` are still in the example so an existing tfvars file applies. Nothing reads them. Port 22 is not opened. Put `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the environment or in the gitignored `.env`. `CLERK_DEV_BYPASS` must be off or `up` refuses to run. Copy `terraform/app.auto.tfvars.example` to `terraform/app.auto.tfvars` and set `app_image` to the `sha-` tag or digest from the image workflow. Do not put `app_image` or the Clerk keys in `terraform.tfvars`. That file is shared with stacks that do not declare those variables, and the keys would be committed if that file were ever tracked. `up` passes the keys as `TF_VAR_clerk_publishable_key` and `TF_VAR_clerk_secret_key`.
 
 ```bash
 PYTHONPATH=src python3 -m dutch_blitz_host up
 ```
 
-`up` creates the backup bucket if needed, starts the instance, and waits until cloud-init has pulled the image, restored the latest snapshot, and started Caddy. It then prints an `https://` URL. Send that URL to the table. Caddy on the host serves it with a certificate and proxies to the container, which listens on `127.0.0.1:8000` only.
+`up` creates the backup bucket if needed, starts the instance, waits until the SSM agent reports `PingStatus=Online` (one to two minutes), and waits until cloud-init has pulled the image, restored the latest snapshot, and started Caddy. It then prints an `https://` URL. Send that URL to the table. Caddy on the host serves it with a certificate and proxies to the container, which listens on `127.0.0.1:8000` only. The agent calls out to SSM. Nothing accepts a connection on port 22.
 
 With these lines in `terraform.tfvars`, the URL is always **https://blitz.sixofonedev.com**:
 
@@ -177,7 +181,7 @@ Add `https://blitz.sixofonedev.com` once as an allowed origin in the [Clerk dash
 
 Leave `dns_zone_name` empty to keep the previous hostname, `<public-ipv4>.sslip.io`. That name changes every night, so the Clerk allowed origin has to be updated to match. Set `domain` only when you are pointing some other name at the instance yourself.
 
-The boot script uploads the local score file before it restores, so running it again does not roll the night backward. The first S3 call can fail while the instance role is still becoming usable. The script retries that call. If it still fails, run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again. `configure` applies the game-night stack (the instance is not replaced; user data changes are ignored) and pipes the current boot script over SSH. A host that is already up does not pull a new `app_image` on `up`. `up` only waits for the first-boot cloud-init. Put the new pin in `terraform/app.auto.tfvars` and run `configure`.
+The boot script uploads the local score file before it restores, so running it again does not roll the night backward. The first S3 call can fail while the instance role is still becoming usable. The script retries that call. If it still fails, run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again. `configure` applies the game-night stack (the instance is not replaced; user data changes are ignored) and re-runs the boot script cloud-init stored on the instance. It does not send that script. SSM keeps command parameters, and the script contains the Clerk keys. A new `app_image` pin, and the idle numbers, are written to `/etc/dutch-blitz/configure.env`. The on-instance script reads that file. A host that is already up does not pull a new `app_image` on `up`. `up` only waits for the first-boot cloud-init. Put the new pin in `terraform/app.auto.tfvars` and run `configure`. An instance booted before this change has a script that does not read that file. `down` and `up` replace it.
 
 When the night is over:
 
@@ -187,7 +191,7 @@ PYTHONPATH=src python3 -m dutch_blitz_host down
 
 `down` uploads a final consistent snapshot (Python's `sqlite3` backup API), then destroys the instance. The S3 bucket is a separate Terraform state with `prevent_destroy`, so this command leaves it in place. A timer on the host also uploads about every 15 minutes. `PYTHONPATH=src python3 -m dutch_blitz_host backup` uploads once without tearing the host down.
 
-If the instance already shut itself down, `down` does not try SSH. It still deletes the blitz A record and the Terraform state. `--skip-backup` remains the manual escape when SSH fails and describe cannot tell whether the instance is gone. Scores saved after the last upload are not copied in that case.
+If the instance already shut itself down, `down` does not try the backup. It still deletes the blitz A record and the Terraform state. `--skip-backup` remains the manual escape when SSM fails and describe cannot tell whether the instance is gone. Scores saved after the last upload are not copied in that case. A tainted or un-id'd instance is looked up by the `Project=dutch-blitz` tag and backed up over SSM. The public IP is not required.
 
 ### If the server is left up
 
@@ -201,7 +205,7 @@ The warning email goes out once when idle reaches `idle_warn_minutes` (default 6
 
 Mail is an SNS topic named `<name_prefix>-idle` (default `dutch-blitz-idle`) in `terraform/game-role`. The subscription is `alert_email` from the gitignored tfvars. Confirm AWS's email once. `down` does not delete the topic, so that confirmation lasts across nights.
 
-To keep a long game going, SSH to the instance and run:
+To keep a long game going, open the instance in Session Manager (the console, with your own credentials; the bot cannot start a session) and run:
 
 ```bash
 sudo /usr/local/bin/dutch-blitz-idle snooze
@@ -238,15 +242,11 @@ State for every root is an object in one S3 bucket, shared by the Mac and the Li
 
 On AWS, before the first `up`:
 
-- Use credentials Terraform can see (environment or `~/.aws`). The Mac keeps using your credentials. The Linux assistant uses the bot user below, not yours.
-- The account needs a default VPC in `us-east-2`.
-- Create an EC2 key pair named `neo-atari` in `us-east-2` if it is not already there. Key pairs are regional. The private key defaults to `~/.ssh/neo-atari.pem`. `up`, `configure`, `backup`, and `down` all take `--ssh-key`. When the flag is omitted they use `DUTCH_BLITZ_SSH_KEY`, and when that is unset they use the pem path above. The assistant's private key stays on that machine, mode `0600`, and is not committed.
+- Use credentials Terraform and boto3 can see (environment or `~/.aws`). The Mac keeps using your credentials. The Linux assistant uses the bot user below, not yours. Neither machine needs an `ssh` client or sudo.
+- The account needs a default VPC in `us-east-2`. The instance has a public IP so the SSM agent can reach the service endpoints. The security group allows HTTP, HTTPS, and all outbound. It does not allow port 22.
 - Pick a bucket name that is free worldwide. Apply `terraform/backup` once so the bucket exists, or let the first `up` create it. Later nights reuse it.
-- Apply `terraform/game-role` yourself, after the bucket exists and before the first `up`. That root is the instance role, the instance profile, and the idle-shutdown SNS topic. `up` only looks the profile up by name. `down` does not delete the role or the topic. Set `alert_email` in the gitignored tfvars and confirm the subscription email once. The steps, including a night that still has the role in the game-night state, are in [docs/remote-state.md](docs/remote-state.md).
-- If the assistant also runs `up` or `down`, add every address that machine might egress from as a `/32` in `ssh_ingress_cidrs`. `ssh_ingress_cidr` stays the first machine. HTTP and HTTPS stay open.
-- Both operators keep the same tfvars values for the shared settings `ssh_ingress_cidrs` and `extra_ssh_public_keys`. State is shared. A different list on one machine makes that machine's apply rewrite the security group or the instance user data of the night the other machine is running.
-
-`extra_ssh_public_keys` is a list of `ssh-ed25519` or `ssh-rsa` public keys. When it is non-empty, cloud-init also gets a `#cloud-config` `ssh_authorized_keys` block for the image default user, which on Amazon Linux 2023 is `ec2-user`. The `neo-atari` key pair is still installed. An empty list is the boot script alone. `user_data_replace_on_change` is false, and Terraform ignores later user-data changes, so editing the script or the key list does not stop or replace a night that is already up. Cloud-init reads user data on first boot. Put the assistant's public key in that list before the next `up`, and point `DUTCH_BLITZ_SSH_KEY` at the matching private key. `configure` re-runs the boot script; it does not add SSH keys to an instance that has already booted.
+- Apply `terraform/game-role` yourself, after the bucket exists and before the first `up`. That root is the instance role, the instance profile, the SSM agent policy, and the idle-shutdown SNS topic. `up` only looks the profile up by name. `down` does not delete the role or the topic. Set `alert_email` in the gitignored tfvars and confirm the subscription email once. The steps, including a night that still has the role in the game-night state, are in [docs/remote-state.md](docs/remote-state.md). The SSM policy is inline, not `AmazonSSMManagedInstanceCore`, so the instance cannot read Parameter Store. It still allows Session Manager from your console. Details are in [docs/bot-iam.md](docs/bot-iam.md).
+- `user_data_replace_on_change` is false, and Terraform ignores later user-data changes, so editing the boot script does not stop or replace a night that is already up. `key_name` is also ignored on an instance that already exists, because dropping the old key pair would replace it. New instances are created with no key pair. Cloud-init reads user data on first boot.
 
 ### Credentials for the Linux assistant
 
@@ -274,25 +274,22 @@ export AWS_DEFAULT_REGION=us-east-2
 aws sts get-caller-identity
 ```
 
-`get-caller-identity` should print the bot user. Then `up` and `down` on that machine use the bot profile, DoH, and the bot's SSH key:
+`get-caller-identity` should print the bot user. Then `up` and `down` on that machine use the bot profile and DoH. Install boto3 there (`pip install -r requirements-host.txt`). No SSH key and no sudo:
 
 ```bash
 export AWS_PROFILE=grok-bot-dutch-blitz
 export AWS_DEFAULT_REGION=us-east-2
 export DUTCH_BLITZ_DNS_MODE=doh
-export DUTCH_BLITZ_SSH_KEY=~/.ssh/grok-bot-dutch-blitz
 PYTHONPATH=src python3 -m dutch_blitz_host up
 ```
 
-`DUTCH_BLITZ_SSH_KEY` is the private key. The matching public key belongs in `extra_ssh_public_keys` in the gitignored tfvars, the same list the Mac has. `--ssh-key` overrides the variable for one command. `configure`, `backup`, and `down` read it the same way:
+`configure`, `backup`, and `down` use the same credentials. SSM Run Command is the channel:
 
 ```bash
 PYTHONPATH=src python3 -m dutch_blitz_host down
 ```
 
-Leave `DUTCH_BLITZ_DNS_MODE` unset on the Mac. Port 53 there is the default. Your Mac does not set the bot profile. You keep applying `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own user. The bot is denied those actions. `up` applies the backup bucket and the game-night instance. It does not apply the role. Apply `terraform/iam-bot` again with your own credentials after the bot policy changes. Until that apply, the bot's refresh of the backup bucket stays denied.
-
-The bot's egress address rotates, so `ssh_ingress_cidrs` holds each `/32` it might use. Copy that list and `extra_ssh_public_keys` onto both machines. Do not let one copy drift: the next apply would change the running night.
+Leave `DUTCH_BLITZ_DNS_MODE` unset on the Mac. Port 53 there is the default. Your Mac does not set the bot profile. You keep applying `terraform/state`, `terraform/iam-bot`, and `terraform/game-role` with your own user. The bot is denied those actions. `up` applies the backup bucket and the game-night instance. It does not apply the role. Apply `terraform/iam-bot` again with your own credentials after the bot policy changes. Until that apply, `SendCommand` stays denied and the bot's refresh of the backup bucket stays denied. Apply `terraform/game-role` as well so the instance role can register with SSM. `ssm:SendCommand` lets the bot run root commands on instances tagged `Project=dutch-blitz`. It does not grant `ssm:StartSession`.
 
 An IAM user can hold two access keys. Rotate without a gap:
 

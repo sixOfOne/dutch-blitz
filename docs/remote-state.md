@@ -112,7 +112,7 @@ That apply creates the bot user and the budget. It is documented in [bot-iam.md]
 
 ### 5. Point the Linux assistant at the same backend
 
-Copy `terraform/backend.hcl` and `terraform/terraform.tfvars` to the assistant's checkout by hand. Do not commit them. The bucket name is not an access key, and it still does not belong in the public repo. The tfvars file has your SSH CIDR.
+Copy `terraform/backend.hcl` and `terraform/terraform.tfvars` to the assistant's checkout by hand. Do not commit them. The bucket name is not an access key, and it still does not belong in the public repo. The tfvars file has the bucket name and the DNS zone. Port 22 is closed, so it no longer needs an SSH CIDR.
 
 The assistant's credentials are the bot access key, stored in its secret store. See the README. Its `up` and `down` pass `-backend-config` to `terraform init` for you.
 
@@ -214,4 +214,4 @@ CI runs `terraform init -backend=false` and `terraform validate -var=enable_aws=
 
 Run `up` or `down` on one machine at a time. The lock object is `<key>.tflock`. Releasing it is an `s3:DeleteObject` on that object only. Versioning on the bucket keeps older state objects if a write goes wrong. The bot is not allowed `s3:DeleteObjectVersion` or `s3:DeleteBucket`.
 
-`ssh_ingress_cidr` is still one CIDR. Add every public `/32` the other machine might use to `ssh_ingress_cidrs` in the gitignored `terraform/terraform.tfvars` so both can open SSH. HTTP and HTTPS stay open either way. Both operators keep the same `ssh_ingress_cidrs` and `extra_ssh_public_keys`. State is shared, so a different value on one machine rewrites the security group or the instance user data of the night the other is running.
+HTTP and HTTPS stay open. Port 22 does not. `ssh_ingress_cidr`, `ssh_ingress_cidrs`, `extra_ssh_public_keys`, and `key_name` are still declared so an existing tfvars file applies, and nothing reads them. State is shared. `app_image` stays in `terraform/app.auto.tfvars`, which only the game-night directory loads.

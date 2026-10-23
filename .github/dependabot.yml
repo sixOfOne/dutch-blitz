@@ -20,8 +20,9 @@ updates:
   # pip: Python packages in the repository root.
   #
   # directory "/" means the root. Dependabot reads every requirements
-  # file there, which in this repo is requirements.txt (the app) and
-  # requirements-dev.txt (the test tools). One entry covers both.
+  # file there: requirements.txt (the app), requirements-dev.txt (the
+  # test tools), and requirements-host.txt (boto3 for the controller).
+  # One entry covers all three.
   # It does not look at version pins that are written inside a workflow
   # run: line. Those are not a requirements file.
   - package-ecosystem: "pip"

@@ -7,7 +7,7 @@ FastAPI scorekeeper in `app/`, `dutch_blitz_host` CLI in `src/`, Terraform roots
 Run the same checks as CI, from the repo root. They must pass. CI has no AWS credentials and no Clerk keys. Do not `terraform plan` or `apply` here. `init` uses `-backend=false`.
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt -r requirements-host.txt
 ruff check app src tests
 ruff format --check app src tests
 mypy
@@ -21,11 +21,11 @@ The exact root list and pins are in the README's Continuous integration section.
 
 ## What runs where
 
-The game-night host runs `ghcr.io/sixofone/dutch-blitz`. It does not copy a working tree over SSH, and it does not run the `latest` tag. `terraform/templates/cloud-init.sh.tftpl` is the boot script. Terraform renders it into user data. `configure` pipes the current render over SSH. Keep it under 16 KiB. Clerk keys are in that script and therefore in Terraform state. Do not print the script.
+The game-night host runs `ghcr.io/sixofone/dutch-blitz`. It does not copy a working tree onto the instance, and it does not run the `latest` tag. `terraform/templates/cloud-init.sh.tftpl` is the boot script. Terraform renders it into user data. `configure` re-runs the copy cloud-init already stored on the instance. It does not send that script: SSM keeps command parameters, and the script contains the Clerk keys. A new image pin is written to `/etc/dutch-blitz/configure.env` and the script reads it. Keep the script under 16 KiB. Clerk keys are in that script and therefore in Terraform state. Do not print the script.
 
 Caddy on the host terminates TLS for `blitz.sixofonedev.com` (or the sslip.io name) and proxies to `127.0.0.1:8000`. The container listens on `0.0.0.0:8000` inside its own network namespace. The Docker publish is loopback only. The container healthcheck is a TCP connect. An HTTP request writes the activity stamp and would reset idle shutdown.
 
-Backup and idle shutdown stay on the host. They use the instance role, the AWS CLI, and `shutdown`. The host copies `dutch_blitz_host` out of the image. Do not put AWS credentials in the image. Port 22 and the sshd drop-in stay. SSM is a later change. Do not remove SSH in passing.
+Backup and idle shutdown stay on the host. They use the instance role, the AWS CLI, and `shutdown`. The host copies `dutch_blitz_host` out of the image. Do not put AWS credentials in the image. Port 22 is closed. There is no sshd drop-in and no key pair. The controller reaches the host with SSM Run Command (`AWS-RunShellScript`) and does not need an `ssh` binary. The instance role allows the agent's Session Manager channels so the owner can open a break-glass shell from the console. The bot is not granted `ssm:StartSession`.
 
 `app_image` is not in the shared `terraform.tfvars` file. It is in `terraform/app.auto.tfvars`, which only the game-night directory loads. A new Terraform variable that belongs in the shared file has to be declared in every root that loads that file.
 

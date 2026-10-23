@@ -1,17 +1,17 @@
-"""Decide whether `down` still needs an SSH backup.
+"""Decide whether `down` still needs a final backup over SSM.
 
 A host that shut itself down is already gone by the time someone runs
 `down`. The on-server timer uploaded a snapshot before it powered off.
-`down` should skip SSH, then still delete the blitz DNS record and the
-Terraform state. A failed describe is not proof the instance is gone:
-SSH is still attempted so a network blip does not throw away scores.
+`down` should skip the backup, then still delete the blitz DNS record
+and the Terraform state. A failed describe is not proof the instance is
+gone: SSM is still attempted so a network blip does not throw away scores.
 
 A failed apply can leave ``aws_instance.game`` tainted, or in state with
 no id, after ``RunInstances`` succeeded and ``ModifyInstanceAttribute``
-did not. Outputs then have no public IP. That instance is not gone.
+did not. Outputs then have no instance id. That instance is not gone.
 ``down`` reads ``terraform show -json`` and, when the id is missing,
 ``DescribeInstances`` filtered to the ``Project=dutch-blitz`` tag, and
-still uploads the snapshot.
+still uploads the snapshot over SSM.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ _NAME_TAG = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?\Z")
 PROJECT_TAG_KEY = "Project"
 PROJECT_TAG_VALUE = "dutch-blitz"
 
-# shutting-down is the terminate path. SSH is already dead, and the
+# shutting-down is the terminate path. The agent is already gone, and the
 # safety net's backup has finished (it runs before shutdown -h now).
 # "stopped" is not in this set. Stop is not what this host is configured
 # to do, and a stopped disk may still hold scores that never reached S3.
@@ -87,15 +87,15 @@ class LiveInstance:
 class FinalBackup:
     """What ``down`` should do before ``terraform destroy``.
 
-    ``skip`` means the host is already terminated, so SSH is omitted.
-    ``host`` is the public IP to use when Terraform outputs do not have
-    one. ``refuse`` means do not destroy: the instance may still hold
-    scores and the backup target is not known.
+    ``skip`` means the host is already terminated, so the backup is omitted.
+    ``instance_id`` is the instance SSM should run the backup on when
+    Terraform outputs do not have one. ``refuse`` means do not destroy:
+    the instance may still hold scores and the backup target is not known.
     """
 
     skip: bool
     detail: str
-    host: str | None = None
+    instance_id: str | None = None
     refuse: bool = False
 
 
@@ -156,7 +156,7 @@ def parse_describe_instances(stdout: str, stderr: str, returncode: int) -> tuple
     return None, True
 
 
-def should_skip_ssh_backup(state: str | None, *, describe_failed: bool) -> bool:
+def should_skip_backup(state: str | None, *, describe_failed: bool) -> bool:
     """True only when the instance is already terminated or missing."""
     if describe_failed:
         return False
@@ -207,27 +207,6 @@ def parse_game_instance_show(document: Any) -> StateGameInstance | None:
             tainted=resource.get("tainted") is True,
         )
     return None
-
-
-def describe_instances_by_id_argv(instance_id: str, region: str) -> list[str]:
-    """Describe one instance, including its public IP. No ``--query``."""
-    cleaned_id = instance_id.strip()
-    cleaned_region = region.strip()
-    if not valid_instance_id(cleaned_id):
-        raise ValueError("instance id must look like i-0123456789abcdef0")
-    if not valid_region(cleaned_region):
-        raise ValueError("region must look like us-east-2")
-    return [
-        "aws",
-        "ec2",
-        "describe-instances",
-        "--instance-ids",
-        cleaned_id,
-        "--region",
-        cleaned_region,
-        "--output",
-        "json",
-    ]
 
 
 def describe_tagged_game_instances_argv(region: str) -> list[str]:

@@ -12,6 +12,8 @@ backup_bucket_name  = "dutch-blitz-scores-replace-me"
 dns_zone_id         = "Z000000000000EXAMPLE"
 dns_record_name     = "blitz"
 name_prefix         = "dutch-blitz"
+# Deprecated. The instance has no key pair. Leave the line if an older
+# copy of this file still has it. The policy does not read it.
 key_name            = "neo-atari"
 bot_user_name       = "grok-bot-dutch-blitz"
 budget_name         = "dutch-blitz-monthly"

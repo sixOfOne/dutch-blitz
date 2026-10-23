@@ -72,36 +72,6 @@ locals {
     idle_topic_name         = "${var.name_prefix}-idle"
     aws_region              = var.aws_region
   })
-  # ssh_authorized_keys is applied to the image default user. On Amazon
-  # Linux 2023 that user is ec2-user. The key pair named by key_name is
-  # still installed. An empty list omits this part. Cloud-init reads it
-  # on first boot only.
-  ssh_cloud_config = length(var.extra_ssh_public_keys) == 0 ? "" : join("\n", concat(
-    ["#cloud-config", "ssh_authorized_keys:"],
-    [for key in var.extra_ssh_public_keys : "  - ${jsonencode(key)}"],
-    [""],
-  ))
-  user_data = local.ssh_cloud_config == "" ? local.boot_script : join("\n", [
-    "Content-Type: multipart/mixed; boundary=\"DUTCH-BLITZ-BOOT\"",
-    "MIME-Version: 1.0",
-    "",
-    "--DUTCH-BLITZ-BOOT",
-    "Content-Type: text/cloud-config; charset=\"us-ascii\"",
-    "MIME-Version: 1.0",
-    "Content-Transfer-Encoding: 7bit",
-    "Content-Disposition: attachment; filename=\"cloud-config.txt\"",
-    "",
-    local.ssh_cloud_config,
-    "--DUTCH-BLITZ-BOOT",
-    "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
-    "MIME-Version: 1.0",
-    "Content-Transfer-Encoding: 7bit",
-    "Content-Disposition: attachment; filename=\"boot.sh\"",
-    "",
-    local.boot_script,
-    "--DUTCH-BLITZ-BOOT--",
-    "",
-  ])
 }
 
 resource "null_resource" "local_ready" {
@@ -113,27 +83,15 @@ resource "null_resource" "local_ready" {
 }
 
 # Checked on every plan, including the local path, so a night cannot start
-# with a missing bucket name, an open-ended SSH default, or a URL in domain.
+# with a missing bucket name or a URL in domain.
 resource "null_resource" "game_night_checks" {
   lifecycle {
     precondition {
       condition = (
         !var.enable_aws ||
-        (
-          length(var.key_name) > 0 &&
-          var.ssh_ingress_cidr != "" &&
-          can(cidrhost(var.ssh_ingress_cidr, 0)) &&
-          can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.backup_bucket_name))
-        )
+        can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.backup_bucket_name))
       )
-      error_message = "enable_aws requires key_name, a CIDR in ssh_ingress_cidr, and a lowercase backup_bucket_name."
-    }
-
-    precondition {
-      condition = alltrue([
-        for cidr in var.ssh_ingress_cidrs : can(cidrhost(cidr, 0))
-      ])
-      error_message = "Every entry in ssh_ingress_cidrs must be a CIDR, such as a public IP with /32."
+      error_message = "enable_aws requires a lowercase backup_bucket_name."
     }
 
     precondition {
@@ -215,7 +173,8 @@ resource "aws_security_group" "game" {
   name  = "${var.name_prefix}-game"
   # AWS security group description is immutable. Changing it forces a new
   # group while the instance still holds this one and wedges apply.
-  # Keep this string. Edit ingress only through the separate rules below.
+  # The text still says SSH. The SSH rule is gone. Do not edit this string.
+  # Edit ingress only through the separate rules below.
   description = "Dutch Blitz game night: HTTP, HTTPS, and SSH"
 
   tags = {
@@ -246,17 +205,6 @@ resource "aws_security_group_rule" "https" {
   description       = "HTTPS"
 }
 
-resource "aws_security_group_rule" "ssh" {
-  count             = var.enable_aws ? 1 : 0
-  type              = "ingress"
-  security_group_id = aws_security_group.game[0].id
-  from_port         = 22
-  to_port           = 22
-  protocol          = "tcp"
-  cidr_blocks       = concat([var.ssh_ingress_cidr], var.ssh_ingress_cidrs)
-  description       = "SSH"
-}
-
 resource "aws_security_group_rule" "egress" {
   count             = var.enable_aws ? 1 : 0
   type              = "egress"
@@ -281,20 +229,24 @@ resource "aws_instance" "game" {
   count                       = var.enable_aws ? 1 : 0
   ami                         = data.aws_ami.amazon_linux[0].id
   instance_type               = var.instance_type
-  key_name                    = var.key_name
   vpc_security_group_ids      = [aws_security_group.game[0].id]
   iam_instance_profile        = data.aws_iam_instance_profile.game[0].name
   associate_public_ip_address = true
-  user_data                   = local.user_data
+  user_data                   = local.boot_script
   # false so an edit cannot destroy the instance. ignore_changes below
   # also stops Terraform from stopping the instance when the script
   # changes. A stop would release the public IP. Cloud-init reads
-  # user_data on first boot only. `configure` pipes the current script
-  # over SSH when a night is already up.
+  # user_data on first boot only. `configure` re-runs that script over
+  # SSM when a night is already up. It does not send a new copy.
   user_data_replace_on_change = false
 
   lifecycle {
-    ignore_changes = [user_data]
+    # key_name used to be the neo-atari key pair, and it is ForceNew.
+    # An instance launched before SSH was removed still has that key
+    # name in AWS. Ignoring the attribute keeps that night from being
+    # replaced. New instances are created with no key pair. Port 22 is
+    # closed either way, so the old key cannot open a shell.
+    ignore_changes = [user_data, key_name]
   }
   # terminate, not stop. `shutdown -h now` on the host powers the OS off.
   # EC2 then deletes the instance, and delete_on_termination deletes the
@@ -316,8 +268,8 @@ resource "aws_instance" "game" {
   #
   # After a self-terminate, Terraform state and the blitz A record still
   # describe the dead instance until the next down or up. down skips the
-  # SSH backup when the instance is already gone and still deletes the
-  # record. up creates a new instance.
+  # backup when the instance is already gone and still deletes the
+  # record. up creates a new instance. The backup runs over SSM.
   instance_initiated_shutdown_behavior = "terminate"
 
   root_block_device {

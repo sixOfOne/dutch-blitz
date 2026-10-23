@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ClientError
 
 import dutch_blitz_host.cli as host_cli
 from dutch_blitz_host import host_backup
@@ -22,19 +23,13 @@ from dutch_blitz_host.backup import (
     s3_uri,
 )
 from dutch_blitz_host.cli import (
-    REMOTE_BOOT_COMMAND,
     aws_enabled,
     build_parser,
     clerk_terraform_env,
     parse_tfvars,
     require_backend_config,
-    resolve_ssh_key,
-    run_remote_script,
-    ssh_argv,
-    ssh_probe_argv,
     terraform_init_argv,
     terraform_local_init_argv,
-    wait_for_ssh,
 )
 from dutch_blitz_host.dns import (
     a_records_from_doh,
@@ -64,7 +59,16 @@ from dutch_blitz_host.instance_status import (
     parse_described_instances,
     parse_game_instance_show,
     pick_tagged_instance,
-    should_skip_ssh_backup,
+    should_skip_backup,
+)
+from dutch_blitz_host.ssm import (
+    BACKUP_COMMAND,
+    CLOUD_INIT_WAIT_COMMAND,
+    SSM_DOCUMENT,
+    ConfigureOverrides,
+    configure_shell,
+    run_shell_script,
+    wait_for_ssm_online,
 )
 
 
@@ -215,7 +219,7 @@ def test_process_environment_wins_and_secrets_are_redacted():
     assert redact("using sk_test_secret now", ["sk_test_secret"]) == "using [redacted] now"
 
 
-def test_tfvars_and_ssh_command_do_not_carry_secrets():
+def test_tfvars_and_ssm_command_do_not_carry_secrets():
     parsed = parse_tfvars(
         """
         # comment
@@ -234,12 +238,29 @@ def test_tfvars_and_ssh_command_do_not_carry_secrets():
         }
     )
     assert env["TF_VAR_clerk_secret_key"] == "sk_test_secret"
-    command = " ".join(
-        ssh_argv("203.0.113.10", Path("/home/owner/.ssh/neo-atari.pem"), REMOTE_BOOT_COMMAND)
+    command = configure_shell(
+        ConfigureOverrides(
+            app_image="ghcr.io/sixofone/dutch-blitz:sha-0123abc",
+            idle_warn_minutes=60,
+            idle_shutdown_minutes=90,
+            uptime_warn_minutes=420,
+            uptime_shutdown_minutes=480,
+            idle_snooze_minutes=120,
+            idle_check_minutes=15,
+        )
     )
-    assert "sudo bash -s" in command
+    assert "sudo bash" in command
+    assert "/var/lib/cloud/instance/scripts/part-001" in command
+    assert "sha-0123abc" in command
     assert "sk_test_secret" not in command
     assert "pk_test_publishable" not in command
+    assert BACKUP_COMMAND == "sudo /usr/local/bin/dutch-blitz-backup backup"
+    assert CLOUD_INIT_WAIT_COMMAND == "sudo cloud-init status --wait"
+    cli_source = Path(host_cli.__file__).read_text(encoding="utf-8")
+    assert "ssh_argv" not in cli_source
+    assert "wait_for_ssh" not in cli_source
+    assert "DUTCH_BLITZ_SSH_KEY" not in cli_source
+    assert "--ssh-key" not in cli_source
 
 
 def test_down_parser_accepts_skip_backup():
@@ -296,34 +317,147 @@ class _FakeClock:
         self.now += seconds
 
 
-def test_ssh_probe_is_a_batch_login_with_a_connect_timeout():
-    argv = ssh_probe_argv("203.0.113.10", Path("/k.pem"))
-    assert argv[0] == "ssh"
-    assert "BatchMode=yes" in argv
-    assert any(a.startswith("ConnectTimeout=") for a in argv)
-    assert argv[-2:] == ["ec2-user@203.0.113.10", "true"]
+class _FakeSsm:
+    def __init__(self, pings, invocations=None):
+        self.pings = list(pings)
+        self.invocations = list(invocations or [])
+        self.sent = []
+        self.describes = []
+
+    def describe_instance_information(self, **kwargs):
+        self.describes.append(kwargs)
+        status = self.pings.pop(0) if len(self.pings) > 1 else self.pings[0]
+        if status is None:
+            return {"InstanceInformationList": []}
+        return {
+            "InstanceInformationList": [{"InstanceId": "i-0123456789abcdef0", "PingStatus": status}]
+        }
+
+    def send_command(self, **kwargs):
+        self.sent.append(kwargs)
+        return {"Command": {"CommandId": "cmd-1"}}
+
+    def get_command_invocation(self, **kwargs):
+        if not self.invocations:
+            return {
+                "Status": "Success",
+                "ResponseCode": 0,
+                "StandardOutputContent": "ok\n",
+                "StandardErrorContent": "",
+            }
+        item = self.invocations.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
-def test_wait_for_ssh_retries_until_the_login_succeeds():
-    codes = iter([255, 255, 0])
-    calls = []
+def _not_yet():
+    return ClientError(
+        {"Error": {"Code": "InvocationDoesNotExist", "Message": "not yet"}},
+        "GetCommandInvocation",
+    )
+
+
+def test_wait_for_ssm_retries_until_the_agent_is_online():
     clock = _FakeClock()
-
-    def run(argv, **_kwargs):
-        calls.append(argv)
-        return _Result(next(codes))
-
-    assert wait_for_ssh(
-        "203.0.113.10",
-        Path("/k.pem"),
+    client = _FakeSsm(["ConnectionLost", "ConnectionLost", "Online"])
+    assert wait_for_ssm_online(
+        "i-0123456789abcdef0",
+        "us-east-2",
         timeout=60,
         interval=5,
-        run=run,
+        client=client,
         sleep=clock.sleep,
         clock=clock,
     )
-    assert len(calls) == 3
+    assert len(client.describes) == 3
     assert clock.now == 10
+    filt = client.describes[0]["InstanceInformationFilterList"][0]
+    assert filt == {"key": "InstanceIds", "valueSet": ["i-0123456789abcdef0"]}
+
+
+def test_wait_for_ssm_gives_up_after_the_timeout():
+    clock = _FakeClock()
+    client = _FakeSsm([None])
+    assert not wait_for_ssm_online(
+        "i-0123456789abcdef0",
+        "us-east-2",
+        timeout=20,
+        interval=5,
+        client=client,
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    assert clock.now <= 20
+    assert len(client.describes) == 5
+
+
+def test_run_shell_script_sends_run_shell_script_and_polls_the_exit_code():
+    clock = _FakeClock()
+    client = _FakeSsm(
+        ["Online"],
+        invocations=[
+            _not_yet(),
+            {
+                "Status": "InProgress",
+                "ResponseCode": -1,
+                "StandardOutputContent": "",
+                "StandardErrorContent": "",
+            },
+            {
+                "Status": "Failed",
+                "ResponseCode": 3,
+                "StandardOutputContent": "pulled\n",
+                "StandardErrorContent": "sk_test_secret leaked\n",
+            },
+        ],
+    )
+    result = run_shell_script(
+        "i-0123456789abcdef0",
+        "us-east-2",
+        BACKUP_COMMAND,
+        timeout_seconds=300,
+        comment="dutch-blitz backup",
+        client=client,
+        secrets=["sk_test_secret"],
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    assert result.exit_code == 3
+    assert result.status == "Failed"
+    sent = client.sent[0]
+    assert sent["DocumentName"] == SSM_DOCUMENT
+    assert sent["InstanceIds"] == ["i-0123456789abcdef0"]
+    assert sent["Parameters"]["commands"] == [BACKUP_COMMAND]
+    assert sent["Parameters"]["executionTimeout"] == ["300"]
+    assert "sk_test_secret" not in json.dumps(sent)
+
+
+def test_configure_shell_rejects_an_unpinned_image_and_shell_metacharacters():
+    with pytest.raises(ValueError):
+        configure_shell(
+            ConfigureOverrides(
+                app_image="ghcr.io/sixofone/dutch-blitz:latest",
+                idle_warn_minutes=60,
+                idle_shutdown_minutes=90,
+                uptime_warn_minutes=420,
+                uptime_shutdown_minutes=480,
+                idle_snooze_minutes=120,
+                idle_check_minutes=15,
+            )
+        )
+    with pytest.raises(ValueError):
+        configure_shell(
+            ConfigureOverrides(
+                app_image="ghcr.io/sixofone/dutch-blitz:sha-0123abc;rm -rf /",
+                idle_warn_minutes=60,
+                idle_shutdown_minutes=90,
+                uptime_warn_minutes=420,
+                uptime_shutdown_minutes=480,
+                idle_snooze_minutes=120,
+                idle_check_minutes=15,
+            )
+        )
 
 
 def test_route53_name_is_the_fqdn_and_sslip_stays_when_unset():
@@ -719,26 +853,17 @@ def test_route53_lookup_reads_the_zone_and_stops_when_aws_fails():
     assert route53_a_records("blitz.sixofonedev.com", "sixofonedev.com", run=failed) is None
 
 
-def test_ssh_key_flag_env_and_pem_agree(monkeypatch):
-    monkeypatch.delenv("DUTCH_BLITZ_SSH_KEY", raising=False)
+def test_commands_do_not_accept_an_ssh_key(monkeypatch):
     for command in ("up", "configure", "backup", "down", "destroy"):
-        assert build_parser().parse_args([command]).ssh_key is None
-    assert resolve_ssh_key(None) == str(Path.home() / ".ssh" / "neo-atari.pem")
-    monkeypatch.setenv("DUTCH_BLITZ_SSH_KEY", "~/keys/bot.pem")
-    assert resolve_ssh_key(None) == str(Path.home() / "keys" / "bot.pem")
-    assert resolve_ssh_key("/tmp/other.pem") == "/tmp/other.pem"
-    assert (
-        build_parser().parse_args(["up", "--ssh-key", "/tmp/flag.pem"]).ssh_key == "/tmp/flag.pem"
-    )
-
-
-def test_main_uses_the_same_ssh_key_for_up_configure_backup_and_down(monkeypatch):
-    monkeypatch.setenv("DUTCH_BLITZ_SSH_KEY", "/keys/from-env.pem")
-    seen = {}
+        args = build_parser().parse_args([command] if command == "up" else [command, "--dry-run"])
+        assert not hasattr(args, "ssh_key")
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["up", "--ssh-key", "/tmp/flag.pem"])
+    seen = []
 
     def remember(name):
         def fake(**kwargs):
-            seen[name] = kwargs["ssh_key"]
+            seen.append((name, kwargs))
             return 0
 
         return fake
@@ -750,13 +875,9 @@ def test_main_uses_the_same_ssh_key_for_up_configure_backup_and_down(monkeypatch
     assert host_cli.main(["up"]) == 0
     assert host_cli.main(["configure", "--dry-run"]) == 0
     assert host_cli.main(["backup", "--dry-run"]) == 0
-    assert host_cli.main(["down", "--ssh-key", "/keys/flag.pem", "--dry-run"]) == 0
-    assert seen == {
-        "up": "/keys/from-env.pem",
-        "configure": "/keys/from-env.pem",
-        "backup": "/keys/from-env.pem",
-        "down": "/keys/flag.pem",
-    }
+    assert host_cli.main(["down", "--dry-run"]) == 0
+    assert [item[0] for item in seen] == ["up", "configure", "backup", "down"]
+    assert all("ssh_key" not in item[1] for item in seen)
 
 
 def test_bad_dns_mode_stops_configure(monkeypatch):
@@ -773,55 +894,34 @@ def test_bad_dns_mode_stops_configure(monkeypatch):
         )
 
 
-def test_wait_for_ssh_gives_up_after_the_timeout():
-    clock = _FakeClock()
-    calls = []
-
-    def run(argv, **_kwargs):
-        calls.append(argv)
-        return _Result(255)
-
-    assert not wait_for_ssh(
-        "203.0.113.10",
-        Path("/k.pem"),
-        timeout=20,
-        interval=5,
-        run=run,
-        sleep=clock.sleep,
-        clock=clock,
-    )
-    assert clock.now <= 20
-    assert len(calls) == 5
-
-
 def test_describe_instances_treats_not_found_as_gone_and_errors_as_unknown():
     argv = describe_instances_argv("i-0123456789abcdef0", "us-east-2")
     assert argv[:3] == ["aws", "ec2", "describe-instances"]
     assert "--instance-ids" in argv
     state, failed = parse_describe_instances('["terminated"]\n', "", 0)
     assert (state, failed) == ("terminated", False)
-    assert should_skip_ssh_backup(state, describe_failed=failed) is True
+    assert should_skip_backup(state, describe_failed=failed) is True
     missing, missing_failed = parse_describe_instances(
         "",
         "An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances operation",
         254,
     )
     assert missing is None and missing_failed is False
-    assert should_skip_ssh_backup(missing, describe_failed=missing_failed) is True
+    assert should_skip_backup(missing, describe_failed=missing_failed) is True
     shutting, _shut_failed = parse_describe_instances('["shutting-down"]\n', "", 0)
-    assert should_skip_ssh_backup(shutting, describe_failed=False) is True
+    assert should_skip_backup(shutting, describe_failed=False) is True
     running, _run_failed = parse_describe_instances('["running"]\n', "", 0)
-    assert should_skip_ssh_backup(running, describe_failed=False) is False
+    assert should_skip_backup(running, describe_failed=False) is False
     # A stopped disk may still hold scores. Do not skip the backup.
     stopped, _stopped_failed = parse_describe_instances('["stopped"]\n', "", 0)
-    assert should_skip_ssh_backup(stopped, describe_failed=False) is False
+    assert should_skip_backup(stopped, describe_failed=False) is False
     _unknown, unknown_failed = parse_describe_instances("", "Unable to locate credentials", 255)
     assert unknown_failed is True
-    assert should_skip_ssh_backup(None, describe_failed=True) is False
+    assert should_skip_backup(None, describe_failed=True) is False
     assert parse_describe_instances("[]\n", "", 0) == (None, False)
 
 
-def test_down_skips_ssh_backup_when_the_instance_already_terminated(monkeypatch, capsys):
+def test_down_skips_backup_when_the_instance_already_terminated(monkeypatch, capsys):
     monkeypatch.setattr(
         host_cli, "load_tfvars", lambda: {"enable_aws": "true", "aws_region": "us-east-2"}
     )
@@ -846,11 +946,11 @@ def test_down_skips_ssh_backup_when_the_instance_already_terminated(monkeypatch,
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
-    assert (
-        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
-    )
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
     assert called == {"backup": 0, "destroy": 1}
-    assert "Skipping the SSH backup" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Skipping the backup" in out
+    assert "SSH" not in out
 
 
 def test_down_still_backs_up_when_describe_fails(monkeypatch):
@@ -869,9 +969,7 @@ def test_down_still_backs_up_when_describe_fails(monkeypatch):
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
-    assert (
-        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
-    )
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
     assert called["backup"] == 1
 
 
@@ -995,14 +1093,14 @@ def test_down_backs_up_a_tainted_instance_found_by_tag(monkeypatch):
         host_cli,
         "find_instances_by_tag",
         lambda _region: (
-            [LiveInstance("i-0123456789abcdef0", "running", "203.0.113.10")],
+            [LiveInstance("i-0123456789abcdef0", "running", None)],
             False,
         ),
     )
     seen = {}
 
     def backup(**kwargs):
-        seen["host"] = kwargs.get("host")
+        seen["instance_id"] = kwargs.get("instance_id")
         return 0
 
     destroyed = {"called": False}
@@ -1013,10 +1111,8 @@ def test_down_backs_up_a_tainted_instance_found_by_tag(monkeypatch):
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
-    assert (
-        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
-    )
-    assert seen["host"] == "203.0.113.10"
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
+    assert seen["instance_id"] == "i-0123456789abcdef0"
     assert destroyed["called"] is True
 
 
@@ -1031,23 +1127,18 @@ def test_down_uses_the_state_id_when_outputs_have_none(monkeypatch):
     monkeypatch.setattr(
         host_cli, "describe_instance_state", lambda *_args, **_kwargs: ("running", False)
     )
-    monkeypatch.setattr(
-        host_cli,
-        "describe_instance_public_ip",
-        lambda *_args, **_kwargs: "203.0.113.20",
-    )
     seen = {}
 
     def backup(**kwargs):
-        seen["host"] = kwargs.get("host")
+        seen["instance_id"] = kwargs.get("instance_id")
+        seen["region"] = kwargs.get("region")
         return 0
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
-    assert (
-        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
-    )
-    assert seen["host"] == "203.0.113.20"
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
+    assert seen["instance_id"] == "i-0123456789abcdef0"
+    assert seen["region"] == "us-east-2"
 
 
 def test_down_skips_backup_when_state_has_no_instance(monkeypatch, capsys):
@@ -1064,10 +1155,10 @@ def test_down_skips_backup_when_state_has_no_instance(monkeypatch, capsys):
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
-    assert (
-        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 0
-    )
-    assert "Skipping the SSH backup" in capsys.readouterr().out
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
+    out = capsys.readouterr().out
+    assert "Skipping the backup" in out
+    assert "SSH" not in out
 
 
 def test_down_refuses_to_guess_among_tagged_instances(monkeypatch):
@@ -1098,9 +1189,7 @@ def test_down_refuses_to_guess_among_tagged_instances(monkeypatch):
 
     monkeypatch.setattr(host_cli, "cmd_backup", boom)
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
-    assert (
-        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 1
-    )
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 1
 
 
 def test_down_refuses_to_destroy_when_the_final_backup_fails(monkeypatch):
@@ -1116,24 +1205,22 @@ def test_down_refuses_to_destroy_when_the_final_backup_fails(monkeypatch):
         raise AssertionError("destroyed")
 
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
-    assert (
-        host_cli.cmd_destroy(ssh_key="/k.pem", dry_run=False, skip_backup=False, do_init=False) == 1
-    )
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 1
 
 
-def test_remote_boot_script_is_stdin_not_an_argument():
-    seen = {}
-
-    def run(argv, **kwargs):
-        seen["argv"] = argv
-        seen["input"] = kwargs.get("input")
-        return _Result(0)
-
-    script = "#!/bin/bash\necho sk_test_secret\n"
-    assert run_remote_script("203.0.113.10", Path("/k.pem"), script, run=run) == 0
-    assert seen["argv"][-1] == "sudo bash -s"
-    assert "sk_test_secret" not in " ".join(seen["argv"])
-    assert seen["input"] == script
+def test_ssm_refuses_a_script_that_contains_a_secret():
+    client = _FakeSsm(["Online"])
+    with pytest.raises(SystemExit, match="secret"):
+        run_shell_script(
+            "i-0123456789abcdef0",
+            "us-east-2",
+            "echo sk_test_secret\n",
+            timeout_seconds=30,
+            comment="dutch-blitz configure",
+            client=client,
+            secrets=["sk_test_secret"],
+        )
+    assert client.sent == []
 
 
 def test_configure_dry_run_does_not_print_or_apply(monkeypatch, capsys):
@@ -1155,6 +1242,8 @@ def test_configure_dry_run_does_not_print_or_apply(monkeypatch, capsys):
             "public_ip": {"value": "203.0.113.10"},
             "hostname": {"value": "203.0.113.10.sslip.io"},
             "backup_bucket": {"value": "dutch-blitz-scores-example"},
+            "instance_id": {"value": "i-0123456789abcdef0"},
+            "app_image": {"value": "ghcr.io/sixofone/dutch-blitz:sha-0123abc"},
         },
     )
 
@@ -1162,16 +1251,18 @@ def test_configure_dry_run_does_not_print_or_apply(monkeypatch, capsys):
         raise AssertionError("configure dry-run applied terraform")
 
     monkeypatch.setattr(host_cli, "cmd_terraform", applied)
-    assert host_cli.cmd_configure(ssh_key="/nope.pem", dry_run=True) == 0
+    assert host_cli.cmd_configure(dry_run=True) == 0
     out = capsys.readouterr().out
     assert "sk_test_secret" not in out
-    assert "sudo bash -s" in out
+    assert "pk_test_publishable" not in out
+    assert "/var/lib/cloud/instance/scripts/part-001" in out
+    assert "sha-0123abc" in out
+    assert "The boot script is not sent" in out
+    assert "sudo bash -s" not in out
     assert "Dry run only" in out
 
 
-def test_up_passes_clerk_keys_only_to_the_night_stack(monkeypatch, tmp_path):
-    key = tmp_path / "id.pem"
-    key.write_text("not-a-real-key\n", encoding="utf-8")
+def test_up_passes_clerk_keys_only_to_the_night_stack(monkeypatch):
     monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
     monkeypatch.setattr(
         host_cli,
@@ -1197,10 +1288,11 @@ def test_up_passes_clerk_keys_only_to_the_night_stack(monkeypatch, tmp_path):
             "public_ip": {"value": "203.0.113.10"},
             "hostname": {"value": "203.0.113.10.sslip.io"},
             "backup_bucket": {"value": "dutch-blitz-scores-example"},
+            "instance_id": {"value": "i-0123456789abcdef0"},
             "app_image": {"value": "ghcr.io/sixofone/dutch-blitz:sha-0123abc"},
         },
     )
-    monkeypatch.setattr(host_cli, "wait_for_ssh", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(host_cli, "wait_for_ssm", lambda *_args, **_kwargs: True)
     seen = {}
 
     def cloud_init(*_args, **kwargs):
@@ -1208,7 +1300,7 @@ def test_up_passes_clerk_keys_only_to_the_night_stack(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(host_cli, "wait_for_cloud_init", cloud_init)
-    assert host_cli.cmd_up(do_init=False, ssh_key=str(key)) == 0
+    assert host_cli.cmd_up(do_init=False) == 0
     assert calls[0][1] is None
     assert calls[0][0].endswith("terraform/backup")
     assert calls[1][0].endswith("terraform")

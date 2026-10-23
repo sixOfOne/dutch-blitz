@@ -14,8 +14,7 @@ DOCKERFILE = REPO / "Dockerfile"
 MAIN = REPO / "terraform" / "main.tf"
 VARIABLES = REPO / "terraform" / "variables.tf"
 
-# Room for the multipart wrapper Terraform adds when extra SSH keys are set.
-# EC2 user data is 16 KiB before base64.
+# EC2 user data is 16 KiB before base64. Leave room so a longer pin still fits.
 USER_DATA_LIMIT = 16384
 
 _TOKEN = re.compile(r"\$\{(jsonencode\(([A-Za-z0-9_]+)\)|([A-Za-z0-9_]+))\}")
@@ -86,9 +85,16 @@ def test_rendered_boot_script_pins_the_image_and_keeps_tls_and_backups():
     assert "email $ACME_EMAIL" in script
     assert "reverse_proxy 127.0.0.1:8000" in script
     assert "/var/log/caddy/access.log" in script
-    assert "PasswordAuthentication no" in script
-    assert "PermitRootLogin no" in script
-    assert "PubkeyAuthentication yes" in script
+    assert "PasswordAuthentication" not in script
+    assert "sshd" not in script
+    assert "read_configure_env" in script
+    assert "/etc/dutch-blitz/configure.env" in script
+    assert "systemctl enable --now amazon-ssm-agent" in script
+    for line in script.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("echo "):
+            assert "CLERK_" not in stripped
+            assert "sk_test_secret" not in stripped
     assert 'BACKUP_BUCKET="dutch-blitz-scores-example"' in script
     assert "dutch-blitz-backup backup" in script
     assert "dutch-blitz-backup restore" in script
@@ -146,5 +152,9 @@ def test_terraform_rejects_a_floating_latest_tag():
     assert "Do not use latest" in variables
     night = MAIN.read_text(encoding="utf-8")
     assert "sha-0000000" in night
-    assert "ignore_changes = [user_data]" in night
-    assert "ssh_authorized_keys" in night
+    assert "ignore_changes = [user_data, key_name]" in night
+    assert "ssh_authorized_keys" not in night
+    assert 'resource "aws_security_group_rule" "http"' in night
+    assert 'resource "aws_security_group_rule" "https"' in night
+    assert 'resource "aws_security_group_rule" "ssh"' not in night
+    assert re.search(r"user_data\s+=\s+local\.boot_script", night)

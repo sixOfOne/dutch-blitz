@@ -283,7 +283,7 @@ def render_notice(
     first_line = (
         "The idle limit will be reached first. Open the site to reset it."
         if first == "idle"
-        else "The uptime limit will be reached first. Snooze from SSH to add time. Opening the site does not move this clock."
+        else "The uptime limit will be reached first. Snooze from Session Manager to add time. Opening the site does not move this clock."
     )
     keep_alive = (
         "To keep it running:\n"
@@ -292,13 +292,14 @@ def render_notice(
         f"    {SNOOZE_COMMAND}\n"
         f"  That adds {format_minutes(limits.snooze_minutes)} to the uptime deadline. "
         "Run it again if the game is still going.\n"
-        "- There is no web address that snoozes the uptime limit or shuts the server down. SSH is required."
+        "- There is no web address that snoozes the uptime limit or shuts the server down. "
+        "Port 22 is closed. Open Session Manager in the console."
     )
     afterwards = (
         "After it powers off, EC2 terminates the instance. The blitz DNS name and "
         "Terraform state still describe it until you run, from a checkout on your laptop:\n"
         f"    {DOWN_COMMAND}\n"
-        "down sees that the instance is already gone, skips another SSH backup, and "
+        "down sees that the instance is already gone, skips another backup, and "
         "removes the DNS record and the state. The next up creates a new instance."
     )
     check = format_minutes(check_minutes)

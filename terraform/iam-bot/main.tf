@@ -68,7 +68,6 @@ locals {
     "dns_zone_id",
     "dns_record_name",
     "role_name",
-    "key_name",
     "budget_name",
   ]
   bot_policy_json = templatefile("${path.module}/../../docs/grok-bot-dutch-blitz-policy.json", {
@@ -79,7 +78,6 @@ locals {
     dns_zone_id        = var.dns_zone_id
     dns_record_name    = var.dns_record_name
     role_name          = local.role_name
-    key_name           = var.key_name
     budget_name        = var.budget_name
   })
   bot_policy_document = jsondecode(local.bot_policy_json)
@@ -97,6 +95,9 @@ locals {
     "ManageRulesOnTaggedGameSecurityGroup",
     "TagGameNightResources",
     "SetShutdownBehaviorOnTaggedGameInstance",
+    "SendCommandToTaggedGameInstance",
+    "SendCommandWithRunShellScript",
+    "ReadSsmCommandResults",
     "ReadGameInstanceProfile",
     "PassGameRoleToEc2Only",
   ])
@@ -238,7 +239,7 @@ resource "null_resource" "bot_checks" {
 resource "aws_iam_policy" "compute" {
   count       = var.enable_aws ? 1 : 0
   name        = "${var.bot_user_name}-compute"
-  description = "EC2 and PassRole for the pre-existing game role, for dutch_blitz_host up and down."
+  description = "EC2, SSM Run Command, and PassRole for the pre-existing game role, for dutch_blitz_host up and down."
   policy      = local.compute_policy_json
 
   tags = {

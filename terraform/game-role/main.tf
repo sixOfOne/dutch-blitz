@@ -242,3 +242,71 @@ resource "aws_iam_role_policy" "publish_idle_topic" {
   role   = aws_iam_role.game[0].id
   policy = data.aws_iam_policy_document.publish_idle_topic[0].json
 }
+
+# SSM for the agent. Not AmazonSSMManagedInstanceCore.
+#
+# That managed policy would register the agent and open Session Manager,
+# and it would also grant Parameter Store reads on every parameter in
+# the account, plus inventory, compliance, and State Manager writes.
+# This host does not use Parameter Store. Those reads are how an instance
+# role becomes a path to whatever secret later lands there.
+#
+# The inline policy is the subset Amazon Linux 2023's agent needs:
+# - ssm:UpdateInstanceInformation, so DescribeInstanceInformation can
+#   show PingStatus=Online.
+# - the four ssmmessages channel actions, so the owner's console Session
+#   Manager can open a break-glass shell. StartSession is a permission
+#   on the caller, not on this role. The bot is not granted it.
+# - the six ec2messages actions, so Run Command can still deliver
+#   AWS-RunShellScript on the EC2 message path the agent uses.
+# - ssm:GetDocument only for that one AWS-owned document.
+#
+# No ssm:StartSession, no Parameter Store, no ssm:*. The agent actions
+# that remain do not support a resource ARN tighter than "*". The
+# document read is the exception, and it is named.
+data "aws_iam_policy_document" "ssm_agent" {
+  count = var.enable_aws ? 1 : 0
+
+  statement {
+    sid       = "RegisterWithSsm"
+    actions   = ["ssm:UpdateInstanceInformation"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "SessionManagerChannels"
+    actions = [
+      "ssmmessages:CreateControlChannel",
+      "ssmmessages:CreateDataChannel",
+      "ssmmessages:OpenControlChannel",
+      "ssmmessages:OpenDataChannel",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "RunCommandMessages"
+    actions = [
+      "ec2messages:AcknowledgeMessage",
+      "ec2messages:DeleteMessage",
+      "ec2messages:FailMessage",
+      "ec2messages:GetEndpoint",
+      "ec2messages:GetMessages",
+      "ec2messages:SendReply",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "ReadRunShellScriptDocument"
+    actions   = ["ssm:GetDocument"]
+    resources = ["arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript"]
+  }
+}
+
+resource "aws_iam_role_policy" "ssm_agent" {
+  count  = var.enable_aws ? 1 : 0
+  name   = "${var.name_prefix}-ssm"
+  role   = aws_iam_role.game[0].id
+  policy = data.aws_iam_policy_document.ssm_agent[0].json
+}

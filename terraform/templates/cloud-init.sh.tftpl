@@ -2,6 +2,8 @@
 # First boot of a Dutch Blitz game night, and the script `configure` runs again.
 # Terraform fills the quoted assignments. Everything after that is ordinary bash.
 # Clerk keys stay in this file and in Terraform state. They are not printed.
+# `configure` does not send this file. SSM keeps command parameters and output.
+# Do not echo the Clerk keys.
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -23,6 +25,45 @@ IDLE_SNOOZE_MINUTES=${idle_snooze_minutes}
 IDLE_CHECK_MINUTES=${idle_check_minutes}
 IDLE_TOPIC_NAME=${jsonencode(idle_topic_name)}
 AWS_REGION=${jsonencode(aws_region)}
+
+# configure writes this file over SSM. The values are not secrets: the image
+# pin and the idle numbers. A new pin has to arrive this way because sending
+# this script would put the Clerk keys in SSM command history. Absent on
+# first boot, so the assignments above stand.
+read_configure_env() {
+  local file=/etc/dutch-blitz/configure.env
+  [ -f "$file" ] || return 0
+  local line key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|\#*) continue ;;
+    esac
+    key="$${line%%=*}"
+    value="$${line#*=}"
+    case "$key" in
+      APP_IMAGE)
+        case "$value" in
+          ghcr.io/sixofone/dutch-blitz:sha-[0-9a-f]*|ghcr.io/sixofone/dutch-blitz@sha256:[0-9a-f]*)
+            APP_IMAGE="$value"
+            ;;
+          *)
+            echo "refusing APP_IMAGE override" >&2
+            exit 1
+            ;;
+        esac
+        ;;
+      IDLE_WARN_MINUTES|IDLE_SHUTDOWN_MINUTES|UPTIME_WARN_MINUTES|UPTIME_SHUTDOWN_MINUTES|IDLE_SNOOZE_MINUTES|IDLE_CHECK_MINUTES)
+        case "$value" in
+          ''|*[!0-9]*)
+            echo "refusing $key override" >&2
+            exit 1
+            ;;
+        esac
+        printf -v "$key" '%s' "$value"
+        ;;
+    esac
+  done < "$file"
+}
 
 APP_UID=10001
 APP_GID=10001
@@ -114,37 +155,6 @@ wait_for_dns() {
   done
   echo "$APP_HOSTNAME did not resolve to $ip. Caddy was not started." >&2
   return 1
-}
-
-write_sshd_dropin() {
-  install -d -m 0755 /etc/ssh/sshd_config.d
-  cat > /etc/ssh/sshd_config.d/00-dutch-blitz-hardening.conf <<'EOF'
-# Public-key login stays on. Password, keyboard-interactive, and root do not.
-# ChallengeResponseAuthentication is the older name of KbdInteractiveAuthentication.
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-ChallengeResponseAuthentication no
-PermitRootLogin no
-PubkeyAuthentication yes
-EOF
-  chmod 0644 /etc/ssh/sshd_config.d/00-dutch-blitz-hardening.conf
-  restorecon -v /etc/ssh/sshd_config.d/00-dutch-blitz-hardening.conf || true
-  /usr/sbin/sshd -t
-  local effective
-  effective="$(/usr/sbin/sshd -T)"
-  local setting
-  for setting in \
-    "passwordauthentication no" \
-    "kbdinteractiveauthentication no" \
-    "permitrootlogin no" \
-    "pubkeyauthentication yes"
-  do
-    if ! printf '%s\n' "$effective" | grep -qx "$setting"; then
-      echo "sshd -T is missing: $setting. Not reloading sshd." >&2
-      exit 1
-    fi
-  done
-  systemctl reload sshd
 }
 
 write_env_files() {
@@ -355,7 +365,12 @@ echo "Installing host packages"
 dnf install -y docker python3.11 awscli sqlite tar gzip
 systemctl enable --now docker
 
-write_sshd_dropin
+# Amazon Linux 2023 ships the SSM agent and starts it. This only makes
+# sure a second run of the script did not leave it stopped. Port 22 is
+# not opened. The controller reaches this host through the agent.
+systemctl enable --now amazon-ssm-agent
+
+read_configure_env
 resolve_hostname
 write_env_files
 write_caddyfile
