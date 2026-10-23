@@ -1,0 +1,390 @@
+#!/bin/bash
+# First boot of a Dutch Blitz game night, and the script `configure` runs again.
+# Terraform fills the quoted assignments. Everything after that is ordinary bash.
+# Clerk keys stay in this file and in Terraform state. They are not printed.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "dutch-blitz boot must run as root." >&2
+  exit 1
+fi
+
+APP_IMAGE=${jsonencode(app_image)}
+CLERK_PUBLISHABLE_KEY=${jsonencode(clerk_publishable_key)}
+CLERK_SECRET_KEY=${jsonencode(clerk_secret_key)}
+APP_HOSTNAME_CONFIG=${jsonencode(app_hostname)}
+ACME_EMAIL=${jsonencode(acme_email)}
+BACKUP_BUCKET=${jsonencode(backup_bucket)}
+IDLE_WARN_MINUTES=${idle_warn_minutes}
+IDLE_SHUTDOWN_MINUTES=${idle_shutdown_minutes}
+UPTIME_WARN_MINUTES=${uptime_warn_minutes}
+UPTIME_SHUTDOWN_MINUTES=${uptime_shutdown_minutes}
+IDLE_SNOOZE_MINUTES=${idle_snooze_minutes}
+IDLE_CHECK_MINUTES=${idle_check_minutes}
+IDLE_TOPIC_NAME=${jsonencode(idle_topic_name)}
+AWS_REGION=${jsonencode(aws_region)}
+
+APP_UID=10001
+APP_GID=10001
+DB_DIR=/var/lib/dutch-blitz
+DB_PATH="$DB_DIR/dutch_blitz.sqlite"
+ACTIVITY_PATH="$DB_DIR/last-activity"
+IDLE_STATE_DIR=/var/lib/dutch-blitz-idle
+CADDY_URL=https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_linux_amd64.tar.gz
+CADDY_SHA512=a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7
+
+retry() {
+  local tries="$1"
+  shift
+  local n=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if [ "$n" -ge "$tries" ]; then
+      echo "gave up after $tries tries: $*" >&2
+      return 1
+    fi
+    n=$((n + 1))
+    sleep 10
+  done
+}
+
+imds_token() {
+  curl -fsS -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+    http://169.254.169.254/latest/api/token
+}
+
+public_ipv4() {
+  local token
+  token="$(imds_token)"
+  curl -fsS -H "X-aws-ec2-metadata-token: $token" \
+    http://169.254.169.254/latest/meta-data/public-ipv4
+}
+
+resolve_hostname() {
+  if [ -n "$APP_HOSTNAME_CONFIG" ]; then
+    APP_HOSTNAME="$APP_HOSTNAME_CONFIG"
+  else
+    APP_HOSTNAME="$(public_ipv4).sslip.io"
+  fi
+  case "$APP_HOSTNAME" in
+    *[!A-Za-z0-9.-]*)
+      echo "hostname is not a DNS name: $APP_HOSTNAME" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# One address, exactly. Let's Encrypt lines are not this check.
+dns_answers() {
+  local name="$1" url="$2"
+  curl -fsS -H "accept: application/dns-json" "$url" | python3.11 -c 'import json,sys
+try:
+    data=json.loads(sys.stdin.read())
+except Exception:
+    raise SystemExit(0)
+ips=[]
+for item in data.get("Answer") or []:
+    if item.get("type") == 1 and item.get("data"):
+        ips.append(item["data"])
+print(" ".join(ips))'
+}
+
+wait_for_dns() {
+  case "$APP_HOSTNAME" in
+    *.sslip.io) return 0 ;;
+  esac
+  local ip deadline answer url
+  ip="$(public_ipv4)"
+  deadline=$((SECONDS + 300))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    for url in \
+      "https://dns.google/resolve?name=$APP_HOSTNAME&type=A" \
+      "https://cloudflare-dns.com/dns-query?name=$APP_HOSTNAME&type=A"
+    do
+      answer="$(dns_answers "$APP_HOSTNAME" "$url" || true)"
+      if [ "$answer" = "$ip" ]; then
+        echo "DNS $APP_HOSTNAME is $ip"
+        return 0
+      fi
+    done
+    echo "Waiting for $APP_HOSTNAME to resolve to $ip"
+    sleep 5
+  done
+  echo "$APP_HOSTNAME did not resolve to $ip. Caddy was not started." >&2
+  return 1
+}
+
+write_sshd_dropin() {
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  cat > /etc/ssh/sshd_config.d/00-dutch-blitz-hardening.conf <<'EOF'
+# Public-key login stays on. Password, keyboard-interactive, and root do not.
+# ChallengeResponseAuthentication is the older name of KbdInteractiveAuthentication.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+EOF
+  chmod 0644 /etc/ssh/sshd_config.d/00-dutch-blitz-hardening.conf
+  restorecon -v /etc/ssh/sshd_config.d/00-dutch-blitz-hardening.conf || true
+  /usr/sbin/sshd -t
+  local effective
+  effective="$(/usr/sbin/sshd -T)"
+  local setting
+  for setting in \
+    "passwordauthentication no" \
+    "kbdinteractiveauthentication no" \
+    "permitrootlogin no" \
+    "pubkeyauthentication yes"
+  do
+    if ! printf '%s\n' "$effective" | grep -qx "$setting"; then
+      echo "sshd -T is missing: $setting. Not reloading sshd." >&2
+      exit 1
+    fi
+  done
+  systemctl reload sshd
+}
+
+write_env_files() {
+  install -d -m 0755 /etc/dutch-blitz
+  install -d -m 0750 -o "$APP_UID" -g "$APP_GID" "$DB_DIR"
+  install -d -m 0755 -o root -g root "$IDLE_STATE_DIR"
+  umask 077
+  cat > /etc/dutch-blitz/env <<EOF
+DUTCH_BLITZ_DB_PATH=$DB_PATH
+DUTCH_BLITZ_ACTIVITY_PATH=$ACTIVITY_PATH
+DUTCH_BLITZ_HOST=0.0.0.0
+DUTCH_BLITZ_PORT=8000
+CLERK_PUBLISHABLE_KEY=$CLERK_PUBLISHABLE_KEY
+CLERK_SECRET_KEY=$CLERK_SECRET_KEY
+CLERK_DEV_BYPASS=0
+CLERK_AUTHORIZED_PARTIES=https://$APP_HOSTNAME
+EOF
+  chmod 0600 /etc/dutch-blitz/env
+  umask 022
+  cat > /etc/dutch-blitz/backup.env <<EOF
+BACKUP_BUCKET=$BACKUP_BUCKET
+BACKUP_PREFIX=dutch-blitz
+DUTCH_BLITZ_DB_PATH=$DB_PATH
+EOF
+  chmod 0644 /etc/dutch-blitz/backup.env
+  cat > /etc/dutch-blitz/idle.env <<EOF
+IDLE_WARN_MINUTES=$IDLE_WARN_MINUTES
+IDLE_SHUTDOWN_MINUTES=$IDLE_SHUTDOWN_MINUTES
+UPTIME_WARN_MINUTES=$UPTIME_WARN_MINUTES
+UPTIME_SHUTDOWN_MINUTES=$UPTIME_SHUTDOWN_MINUTES
+IDLE_SNOOZE_MINUTES=$IDLE_SNOOZE_MINUTES
+IDLE_CHECK_MINUTES=$IDLE_CHECK_MINUTES
+AWS_DEFAULT_REGION=$AWS_REGION
+AWS_REGION=$AWS_REGION
+IDLE_TOPIC_NAME=$IDLE_TOPIC_NAME
+IDLE_ACCESS_LOG=/var/log/caddy/access.log
+IDLE_ACTIVITY_PATH=$ACTIVITY_PATH
+IDLE_STATE_PATH=$IDLE_STATE_DIR/state.json
+IDLE_PUBLIC_URL=https://$APP_HOSTNAME
+EOF
+  chmod 0644 /etc/dutch-blitz/idle.env
+}
+
+write_caddyfile() {
+  install -d -m 0755 /etc/caddy /var/log/caddy
+  local global=""
+  if [ -n "$ACME_EMAIL" ]; then
+    global="{
+	email $ACME_EMAIL
+}
+"
+  fi
+  cat > /etc/caddy/Caddyfile <<EOF
+$global$APP_HOSTNAME {
+	encode gzip
+	log {
+		output file /var/log/caddy/access.log
+		format json
+	}
+	reverse_proxy 127.0.0.1:8000
+}
+EOF
+  chmod 0644 /etc/caddy/Caddyfile
+}
+
+install_caddy() {
+  local tmp
+  tmp="$(mktemp -d)"
+  curl -fsSL -o "$tmp/caddy.tar.gz" "$CADDY_URL"
+  echo "$CADDY_SHA512  $tmp/caddy.tar.gz" | sha512sum -c -
+  tar -xzf "$tmp/caddy.tar.gz" -C "$tmp" caddy
+  install -m 0755 "$tmp/caddy" /usr/local/bin/caddy
+  rm -rf "$tmp"
+  restorecon -v /usr/local/bin/caddy || true
+  cat > /etc/systemd/system/caddy.service <<'EOF'
+[Unit]
+Description=Caddy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+Restart=on-failure
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+install_host_tools() {
+  cat > /usr/local/bin/dutch-blitz-backup <<'EOF'
+#!/bin/bash
+set -euo pipefail
+set -a
+. /etc/dutch-blitz/backup.env
+set +a
+export PYTHONPATH=/opt/dutch-blitz/hostpkg
+exec /usr/bin/python3.11 -m dutch_blitz_host.host_backup "$@"
+EOF
+  cat > /usr/local/bin/dutch-blitz-idle <<'EOF'
+#!/bin/bash
+set -euo pipefail
+set -a
+. /etc/dutch-blitz/idle.env
+set +a
+export PYTHONPATH=/opt/dutch-blitz/hostpkg
+exec /usr/bin/python3.11 -m dutch_blitz_host.idle "$@"
+EOF
+  chmod 0755 /usr/local/bin/dutch-blitz-backup /usr/local/bin/dutch-blitz-idle
+  cat > /etc/systemd/system/dutch-blitz-backup.service <<'EOF'
+[Unit]
+Description=Upload a Dutch Blitz score snapshot
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dutch-blitz-backup backup
+EOF
+  cat > /etc/systemd/system/dutch-blitz-backup.timer <<'EOF'
+[Unit]
+Description=Upload Dutch Blitz scores every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  cat > /etc/systemd/system/dutch-blitz-idle.service <<'EOF'
+[Unit]
+Description=Warn, back up, and shut down when this Dutch Blitz host is idle or past its maximum uptime
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=15min
+ExecStart=/usr/local/bin/dutch-blitz-idle check
+EOF
+  cat > /etc/systemd/system/dutch-blitz-idle.timer <<EOF
+[Unit]
+Description=Check every $IDLE_CHECK_MINUTES minutes whether this Dutch Blitz host should shut down
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=$(printf '%smin' "$IDLE_CHECK_MINUTES")
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+extract_host_package() {
+  local cid
+  cid="$(docker create "$APP_IMAGE")"
+  rm -rf /opt/dutch-blitz/hostpkg
+  install -d -m 0755 /opt/dutch-blitz
+  docker cp "$cid:/opt/dutch-blitz/hostpkg" /opt/dutch-blitz/hostpkg
+  docker rm "$cid" >/dev/null
+  restorecon -RF /opt/dutch-blitz || true
+}
+
+stop_scorekeeper() {
+  # A host that was configured by Ansible still has a systemd unit on
+  # 127.0.0.1:8000. Disable it or the container cannot publish that port.
+  systemctl disable --now dutch-blitz.service 2>/dev/null || true
+  systemctl stop dutch-blitz-backup.timer dutch-blitz-idle.timer caddy 2>/dev/null || true
+  docker stop dutch-blitz >/dev/null 2>&1 || true
+  docker rm dutch-blitz >/dev/null 2>&1 || true
+}
+
+start_scorekeeper() {
+  # Published on loopback only. Caddy is what phones connect to.
+  # :Z keeps SELinux from blocking the container from the score directory.
+  docker run -d \
+    --name dutch-blitz \
+    --restart unless-stopped \
+    --env-file /etc/dutch-blitz/env \
+    -p 127.0.0.1:8000:8000 \
+    -v "$DB_DIR:$DB_DIR:Z" \
+    "$APP_IMAGE"
+}
+
+wait_until_healthy() {
+  local status n=0
+  # The image checks every 30s. Two missed intervals still finish inside this loop.
+  while [ "$n" -lt 24 ]; do
+    status="$(docker inspect -f '{{.State.Health.Status}}' dutch-blitz 2>/dev/null || true)"
+    if [ "$status" = "healthy" ]; then
+      echo "dutch-blitz container is healthy"
+      return 0
+    fi
+    n=$((n + 1))
+    sleep 5
+  done
+  echo "dutch-blitz container did not become healthy." >&2
+  docker logs dutch-blitz >&2 || true
+  return 1
+}
+
+echo "Installing host packages"
+dnf install -y docker python3.11 awscli sqlite tar gzip
+systemctl enable --now docker
+
+write_sshd_dropin
+resolve_hostname
+write_env_files
+write_caddyfile
+install_caddy
+install_host_tools
+
+echo "Pulling $APP_IMAGE"
+retry 5 docker pull "$APP_IMAGE"
+extract_host_package
+
+# Upload first when this host already has a database, so a second run does
+# not replace a newer local file with an older snapshot. A fresh host has
+# no file. The instance role can take a few seconds to become usable.
+stop_scorekeeper
+retry 6 /usr/local/bin/dutch-blitz-backup backup
+retry 6 /usr/local/bin/dutch-blitz-backup restore
+chown -R "$APP_UID:$APP_GID" "$DB_DIR"
+chmod 0750 "$DB_DIR"
+
+start_scorekeeper
+systemctl daemon-reload
+systemctl enable --now dutch-blitz-backup.timer
+systemctl enable --now dutch-blitz-idle.timer
+wait_until_healthy
+
+if wait_for_dns; then
+  systemctl enable --now caddy
+  echo "Dutch Blitz is up at https://$APP_HOSTNAME"
+else
+  echo "The app is running on localhost. Caddy was not started." >&2
+  exit 1
+fi

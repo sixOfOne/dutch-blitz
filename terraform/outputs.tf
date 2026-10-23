@@ -47,6 +47,17 @@ output "backup_note" {
   value       = "terraform destroy in this directory deletes the instance only. The backup bucket is terraform/backup. The instance role and the idle SNS topic are terraform/game-role."
 }
 
+output "cloud_init" {
+  description = "Boot script for this night. Sensitive because it contains the Clerk keys. configure pipes it to the host over SSH."
+  value       = local.boot_script
+  sensitive   = true
+}
+
+output "app_image" {
+  description = "Image the boot script pulls. A sha- tag or a digest, never latest."
+  value       = var.app_image
+}
+
 output "idle_shutdown_note" {
   description = "What a self-terminate leaves behind."
   value       = "The host shuts itself down when it is idle or past the uptime limit, after a successful S3 backup. Confirm the SNS email from terraform/game-role once. After a self-terminate, run down to remove the blitz DNS record. State stays stale until down or the next up."

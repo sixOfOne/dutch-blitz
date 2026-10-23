@@ -1,0 +1,44 @@
+# Build context for the scorekeeper image.
+# Anything not listed here can still be excluded by the Dockerfile, which
+# copies only requirements.txt, app/, and src/dutch_blitz_host/. These
+# rules are the backstop so a later COPY . cannot pick up secrets.
+
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+# Secrets and local config. Never send these to the builder.
+.env
+.env.*
+*.pem
+*.key
+terraform.tfvars
+*.auto.tfvars
+backend.hcl
+
+# Not part of the running server.
+tests
+terraform
+docs
+ansible
+*.md
+.cursor
+.idea
+.vscode
+
+# Local databases and Terraform state.
+data
+backups
+*.sqlite
+*.sqlite3
+*.db
+.terraform
+*.tfstate
+*.tfstate.*

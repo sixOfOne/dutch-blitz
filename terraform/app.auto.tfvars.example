@@ -1,0 +1,10 @@
+# Copy to terraform/app.auto.tfvars (gitignored). Terraform loads every
+# *.auto.tfvars file in this directory on its own. Do not put this variable
+# in terraform/terraform.tfvars. That file is also passed to terraform/game-role
+# and terraform/iam-bot, which do not declare app_image.
+#
+# After the image workflow on main finishes, copy the sha- tag it pushed.
+# A digest pin also works. latest is rejected.
+#
+# app_image = "ghcr.io/sixofone/dutch-blitz:sha-0123abc"
+# app_image = "ghcr.io/sixofone/dutch-blitz@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

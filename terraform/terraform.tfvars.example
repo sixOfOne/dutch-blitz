@@ -2,6 +2,11 @@
 # With no tfvars file, enable_aws stays false and apply creates nothing.
 # Leave enable_aws true until after `down`. Setting it false makes `down`
 # skip the instance, because the destroy command reads this file.
+#
+# The container pin does not go in this file. Copy terraform/app.auto.tfvars.example
+# to terraform/app.auto.tfvars. This file is also passed to terraform/game-role
+# and terraform/iam-bot, which do not declare app_image. Clerk keys are not
+# tfvars either. `up` reads them from the environment or .env.
 
 enable_aws         = true
 aws_region         = "us-east-2"

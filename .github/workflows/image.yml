@@ -1,0 +1,175 @@
+# Build the scorekeeper image and publish it to GitHub Container Registry.
+#
+# The game-night host pulls ghcr.io/sixofone/dutch-blitz. It does not
+# copy the working tree over SSH. A pull request only builds the image,
+# so a fork cannot publish. A push to main, and a manual run, publish.
+
+name: Image
+
+# on: when a workflow run starts.
+#
+# push runs for main, and only when a path that goes into the image
+# changed. A Terraform-only commit does not spend minutes on a build.
+#
+# pull_request uses the same paths. The job builds and does not push.
+#
+# workflow_dispatch is the "Run workflow" button on the Actions tab.
+# It ignores paths, so you can rebuild the current commit by hand.
+# latest is still only applied when that commit is main.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "src/dutch_blitz_host/**"
+      - ".github/workflows/image.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "src/dutch_blitz_host/**"
+      - ".github/workflows/image.yml"
+  workflow_dispatch:
+
+# The built-in GITHUB_TOKEN starts with read access to the repo and
+# nothing else. The push job below replaces this block for itself.
+# A pull request keeps this one, so it cannot write a package.
+permissions:
+  contents: read
+
+# One in-progress image run per branch. A newer push cancels the older
+# build. The group name starts with "image-" so it does not cancel the
+# CI workflow, which has its own group.
+concurrency:
+  group: image-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+# ghcr.io names are lowercase. The GitHub owner is sixOfOne; the registry
+# owner is sixofone. The image name has to match or the push is rejected.
+env:
+  IMAGE: ghcr.io/sixofone/dutch-blitz
+
+jobs:
+  # Pull requests build the Dockerfile so a broken image fails the check.
+  # push is false. This job does not log in and does not get packages: write.
+  build:
+    name: Build image
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Buildx is the builder the next action drives. Without this step
+      # the runner's older docker builder is what runs.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Tags and labels for the image. This pull request does not push,
+      # but the build still needs a tag so the Dockerfile is exercised
+      # the same way as on main. latest is off unless the ref is main,
+      # which a pull request ref is not.
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # push: false leaves the image on this runner. The runner is thrown
+      # away at the end of the job. provenance is off here because the
+      # attestation is attached by the publish job, and only after a push.
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+
+  # Publishes to ghcr.io. A job permissions block replaces the workflow
+  # block rather than adding to it, so contents: read is repeated or
+  # checkout would not be allowed.
+  #
+  # packages: write lets GITHUB_TOKEN push the image. It is not a PAT.
+  # id-token: write lets the attestation action sign a short-lived token.
+  # attestations: write lets that action store the provenance statement.
+  publish:
+    name: Publish image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # registry is ghcr.io, not Docker Hub. username is the account that
+      # started the run. password is the workflow token GitHub created
+      # for this job. No personal access token is stored in the repo.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # sha-<short> is the first seven characters of the commit, prefixed
+      # so a glance tells a pin from a version number. latest is added
+      # only on main. The host does not run latest. Terraform rejects it.
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # provenance and sbom are off because the next step writes the
+      # attestation itself. Leaving the builder's provenance on as well
+      # would attach a second statement.
+      - name: Build and push the image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+
+      # subject-digest is the sha256 the push just produced. The statement
+      # says which workflow built that digest. push-to-registry stores it
+      # next to the image so a later pull can be matched to this run.
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

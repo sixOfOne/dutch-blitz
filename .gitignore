@@ -48,8 +48,4 @@ backend.hcl
 *.pem
 *.key
 
-# Generated Ansible inventories (public IP and local PEM path).
-# syntax-check.yml is the tracked stand-in used by CI.
 *.retry
-ansible/inventory/*
-!ansible/inventory/syntax-check.yml

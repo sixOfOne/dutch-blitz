@@ -302,10 +302,11 @@ def test_backup_bucket_refresh_reads_are_scoped_to_that_bucket():
 def test_instance_tags_the_volume_without_replacing_it():
     night = (REPO / "terraform" / "main.tf").read_text(encoding="utf-8")
     assert "volume_tags = {" in night
-    assert re.search(r"user_data\s+=\s+local\.extra_ssh_user_data", night)
+    assert re.search(r"user_data\s+=\s+local\.user_data", night)
     assert "user_data_replace_on_change = false" in night
+    assert "ignore_changes = [user_data]" in night
     assert "ssh_authorized_keys" in night
-    assert "extra_ssh_user_data" in night
+    assert 'templatefile("${path.module}/templates/cloud-init.sh.tftpl"' in night
     start = night.index("root_block_device {")
     block = night[start : night.index("\n  }", start)]
     assert "tags" not in block
