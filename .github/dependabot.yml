@@ -22,8 +22,8 @@ updates:
   # directory "/" means the root. Dependabot reads every requirements
   # file there, which in this repo is requirements.txt (the app) and
   # requirements-dev.txt (the test tools). One entry covers both.
-  # It does not look at the ansible-core pin inside the workflow; that
-  # line is not a requirements file.
+  # It does not look at version pins that are written inside a workflow
+  # run: line. Those are not a requirements file.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -107,6 +107,26 @@ updates:
     groups:
       # Same bundle as the pip entry. A provider major (5.x to 6.x)
       # stays its own pull request.
+      minor-and-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # docker: the FROM line in the Dockerfile at the repository root.
+  #
+  # The base image is python:3.11-slim pinned with a digest. Dependabot
+  # reads the tag and the digest together and opens a pull request that
+  # moves both when 3.11-slim points at a new build. The scorekeeper
+  # image published to ghcr.io is not a Dockerfile FROM, so this entry
+  # does not bump app_image. That pin is a Terraform variable.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
       minor-and-patch:
         applies-to: "version-updates"
         update-types:

@@ -2,9 +2,10 @@
 #
 # GitHub Actions reads this file and runs the jobs on a clean Ubuntu
 # machine. The jobs install the repo's Python requirements, run ruff,
-# mypy, and pytest, and check Terraform (fmt, tflint, validate) and
-# Ansible. They do not receive Clerk keys or AWS credentials, and they
-# never plan or apply infrastructure.
+# mypy, and pytest, and check Terraform (fmt, tflint, validate). They
+# do not receive Clerk keys or AWS credentials, and they never plan or
+# apply infrastructure. The infra job is still named Terraform and Ansible
+# so the branch ruleset matches. Ansible itself is gone.
 
 name: CI
 
@@ -58,7 +59,8 @@ jobs:
   # same time. A third job is not worth another machine: ruff and mypy
   # share this one with pytest, and tflint shares the infra machine.
   # The check names stay "Python tests" and "Terraform and Ansible"
-  # so an existing ruleset does not have to be edited.
+  # so an existing ruleset does not have to be edited. Ansible itself
+  # is gone; the name is what the ruleset matches.
   tests:
     name: Python tests
     # runs-on picks the machine. ubuntu-latest is a new GitHub-hosted
@@ -79,8 +81,9 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Python 3.11 is the interpreter installed on the game-night host
-      # (ansible/roles/app) and the version the README asks for.
+      # Python 3.11 is the interpreter in the game-night image and the
+      # version the README asks for. The host also installs it for the
+      # backup and idle commands, which run outside the container.
       #
       # cache: pip stores downloaded wheels in the Actions cache. The
       # key includes a hash of the two requirements files, so an edit
@@ -117,6 +120,9 @@ jobs:
         run: pytest
 
   infra:
+    # The check name stays "Terraform and Ansible" so the branch ruleset
+    # documented in docs/repo-security.md still matches. Ansible is gone.
+    # Renaming the job would leave main waiting on a check that no longer runs.
     name: Terraform and Ansible
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -210,30 +216,3 @@ jobs:
             terraform -chdir="$dir" validate -no-color -var=enable_aws=false
           done
 
-      # Same minor version as the test job. ansible-core 2.19 installs
-      # on 3.11. ansible-core 2.20 and newer require 3.12, which the
-      # game-night host does not use.
-      - name: Set up Python 3.11 for Ansible
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-
-      # ansible-core is enough: the playbook uses ansible.builtin only.
-      # The full Ansible package would download hundreds of collections.
-      # Pins match the Continuous integration section of the README.
-      # A newer ansible-lint can add rules; the pin keeps that from
-      # failing CI until someone chooses to upgrade.
-      - name: Install Ansible tools
-        run: python -m pip install --disable-pip-version-check 'ansible-core==2.19.14' 'ansible-lint==26.9.0'
-
-      # --syntax-check parses the playbook and roles. It does not
-      # connect to a host. syntax-check.yml is a stand-in for the
-      # inventory the CLI writes at configure time (that file is gitignored).
-      - name: Ansible syntax check
-        run: ansible-playbook ansible/playbook.yml --syntax-check -i ansible/inventory/syntax-check.yml
-
-      # Lint catches problems a parse does not, such as a task that sets
-      # become_user without become. --offline skips the schema update
-      # ansible-lint would otherwise download on a fresh machine.
-      - name: Ansible lint
-        run: ansible-lint ansible/playbook.yml --offline --nocolor

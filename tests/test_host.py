@@ -22,12 +22,15 @@ from dutch_blitz_host.backup import (
     s3_uri,
 )
 from dutch_blitz_host.cli import (
+    REMOTE_BOOT_COMMAND,
     aws_enabled,
     build_parser,
+    clerk_terraform_env,
     parse_tfvars,
-    render_aws_inventory,
     require_backend_config,
     resolve_ssh_key,
+    run_remote_script,
+    ssh_argv,
     ssh_probe_argv,
     terraform_init_argv,
     terraform_local_init_argv,
@@ -165,7 +168,8 @@ def test_env_file_mode_and_deployment_contents():
     assert "CLERK_DEV_BYPASS=0\n" in text
     assert "CLERK_DEV_BYPASS=1" not in text
     assert "CLERK_AUTHORIZED_PARTIES=https://203.0.113.10.sslip.io\n" in text
-    assert "DUTCH_BLITZ_HOST=127.0.0.1\n" in text
+    assert "DUTCH_BLITZ_HOST=0.0.0.0\n" in text
+    assert "DUTCH_BLITZ_ACTIVITY_PATH=/var/lib/dutch-blitz/last-activity\n" in text
     with pytest.raises(ValueError):
         deployment_env(
             publishable_key="pk_test_publishable",
@@ -205,7 +209,7 @@ def test_process_environment_wins_and_secrets_are_redacted():
     assert redact("using sk_test_secret now", ["sk_test_secret"]) == "using [redacted] now"
 
 
-def test_tfvars_and_inventory_do_not_carry_secrets():
+def test_tfvars_and_ssh_command_do_not_carry_secrets():
     parsed = parse_tfvars(
         """
         # comment
@@ -217,18 +221,19 @@ def test_tfvars_and_inventory_do_not_carry_secrets():
     assert aws_enabled(parsed) is True
     assert aws_enabled({}) is False
     assert parsed["backup_bucket_name"] == "dutch-blitz-scores-example"
-    inventory = render_aws_inventory(
-        public_ip="203.0.113.10",
-        ssh_key=Path("/home/owner/.ssh/neo-atari.pem"),
-        hostname="203.0.113.10.sslip.io",
-        backup_bucket="dutch-blitz-scores-example",
-        acme_email="",
+    env = clerk_terraform_env(
+        {
+            "CLERK_PUBLISHABLE_KEY": "pk_test_publishable",
+            "CLERK_SECRET_KEY": "sk_test_secret",
+        }
     )
-    assert "ansible_host: 203.0.113.10" in inventory
-    assert "ansible_ssh_private_key_file: /home/owner/.ssh/neo-atari.pem" in inventory
-    assert "app_hostname: 203.0.113.10.sslip.io" in inventory
-    assert "backup_bucket: dutch-blitz-scores-example" in inventory
-    assert "sk_test_secret" not in inventory
+    assert env["TF_VAR_clerk_secret_key"] == "sk_test_secret"
+    command = " ".join(
+        ssh_argv("203.0.113.10", Path("/home/owner/.ssh/neo-atari.pem"), REMOTE_BOOT_COMMAND)
+    )
+    assert "sudo bash -s" in command
+    assert "sk_test_secret" not in command
+    assert "pk_test_publishable" not in command
 
 
 def test_down_parser_accepts_skip_backup():
@@ -880,23 +885,102 @@ def test_down_refuses_to_destroy_when_the_final_backup_fails(monkeypatch):
     )
 
 
-def test_inventory_can_carry_idle_limits_without_the_alert_email():
-    inventory = render_aws_inventory(
-        public_ip="203.0.113.10",
-        ssh_key=Path("/home/owner/.ssh/neo-atari.pem"),
-        hostname="blitz.example.com",
-        backup_bucket="dutch-blitz-scores-example",
-        acme_email="",
-        extra_vars={
-            "idle_warn_minutes": "45",
-            "idle_topic_name": "dutch-blitz-idle",
-            "aws_region": "us-east-2",
+def test_remote_boot_script_is_stdin_not_an_argument():
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["input"] = kwargs.get("input")
+        return _Result(0)
+
+    script = "#!/bin/bash\necho sk_test_secret\n"
+    assert run_remote_script("203.0.113.10", Path("/k.pem"), script, run=run) == 0
+    assert seen["argv"][-1] == "sudo bash -s"
+    assert "sk_test_secret" not in " ".join(seen["argv"])
+    assert seen["input"] == script
+
+
+def test_configure_dry_run_does_not_print_or_apply(monkeypatch, capsys):
+    monkeypatch.setattr(
+        host_cli,
+        "load_controller_env",
+        lambda: {
+            "CLERK_PUBLISHABLE_KEY": "pk_test_publishable",
+            "CLERK_SECRET_KEY": "sk_test_secret",
+            "CLERK_DEV_BYPASS": "0",
         },
     )
-    assert "idle_warn_minutes: 45" in inventory
-    assert "idle_topic_name: dutch-blitz-idle" in inventory
-    assert "alert_email" not in inventory
-    assert "@" not in inventory
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"dns_zone_name": ""})
+    monkeypatch.setattr(
+        host_cli,
+        "terraform_outputs",
+        lambda _path: {
+            "mode": {"value": "aws"},
+            "public_ip": {"value": "203.0.113.10"},
+            "hostname": {"value": "203.0.113.10.sslip.io"},
+            "backup_bucket": {"value": "dutch-blitz-scores-example"},
+        },
+    )
+
+    def applied(*_args, **_kwargs):
+        raise AssertionError("configure dry-run applied terraform")
+
+    monkeypatch.setattr(host_cli, "cmd_terraform", applied)
+    assert host_cli.cmd_configure(ssh_key="/nope.pem", dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "sk_test_secret" not in out
+    assert "sudo bash -s" in out
+    assert "Dry run only" in out
+
+
+def test_up_passes_clerk_keys_only_to_the_night_stack(monkeypatch, tmp_path):
+    key = tmp_path / "id.pem"
+    key.write_text("not-a-real-key\n", encoding="utf-8")
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
+    monkeypatch.setattr(
+        host_cli,
+        "load_controller_env",
+        lambda: {
+            "CLERK_PUBLISHABLE_KEY": "pk_test_publishable",
+            "CLERK_SECRET_KEY": "sk_test_secret",
+            "CLERK_DEV_BYPASS": "0",
+        },
+    )
+    calls = []
+
+    def terraform(tf_dir, **kwargs):
+        calls.append((str(tf_dir), kwargs.get("extra_env")))
+        return 0
+
+    monkeypatch.setattr(host_cli, "cmd_terraform", terraform)
+    monkeypatch.setattr(
+        host_cli,
+        "terraform_outputs",
+        lambda _path: {
+            "mode": {"value": "aws"},
+            "public_ip": {"value": "203.0.113.10"},
+            "hostname": {"value": "203.0.113.10.sslip.io"},
+            "backup_bucket": {"value": "dutch-blitz-scores-example"},
+            "app_image": {"value": "ghcr.io/sixofone/dutch-blitz:sha-0123abc"},
+        },
+    )
+    monkeypatch.setattr(host_cli, "wait_for_ssh", lambda *_args, **_kwargs: True)
+    seen = {}
+
+    def cloud_init(*_args, **kwargs):
+        seen["require_success"] = kwargs.get("require_success")
+        return True
+
+    monkeypatch.setattr(host_cli, "wait_for_cloud_init", cloud_init)
+    assert host_cli.cmd_up(do_init=False, ssh_key=str(key)) == 0
+    assert calls[0][1] is None
+    assert calls[0][0].endswith("terraform/backup")
+    assert calls[1][0].endswith("terraform")
+    night_env = calls[1][1]
+    assert night_env is not None
+    assert night_env["TF_VAR_clerk_secret_key"] == "sk_test_secret"
+    assert night_env["TF_VAR_clerk_publishable_key"] == "pk_test_publishable"
+    assert seen["require_success"] is True
 
 
 def test_bot_policy_is_unchanged_for_idle_shutdown():

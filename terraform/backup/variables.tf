@@ -109,7 +109,7 @@ variable "dns_record_name" {
 
 # Declared so the shared terraform.tfvars file applies. This stack does
 # not create the topic and does not read the thresholds. The game-night
-# CLI copies the numbers into Ansible. terraform/game-role owns the topic.
+# boot script writes the numbers. terraform/game-role owns the topic.
 # tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "alert_email" {
   description = "Declared so the shared tfvars file applies. Unused by this stack. terraform/game-role subscribes this address. Do not commit the real address."

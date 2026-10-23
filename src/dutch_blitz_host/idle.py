@@ -45,7 +45,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-# These match the Terraform variable defaults. Ansible writes the same
+# These match the Terraform variable defaults. Cloud-init writes the same
 # numbers into /etc/dutch-blitz/idle.env from terraform.tfvars.
 DEFAULT_IDLE_WARN_MINUTES = 60
 DEFAULT_IDLE_SHUTDOWN_MINUTES = 90
@@ -542,7 +542,7 @@ def _minutes(values: dict[str, str], tf_key: str, env_key: str, default: int) ->
 
 
 def idle_inventory_vars(tfvars: dict[str, str]) -> dict[str, str]:
-    """Host vars for the Ansible inventory. No email address is included.
+    """Idle settings the boot script writes. No email address is included.
 
     The SNS subscription lives in Terraform. The instance only needs the
     topic name, which it turns into an ARN with the account id from IMDS.
@@ -567,7 +567,7 @@ def idle_inventory_vars(tfvars: dict[str, str]) -> dict[str, str]:
     }
     for key, value in values.items():
         if not re.fullmatch(r"[A-Za-z0-9._-]+", value):
-            raise SystemExit(f"{key} is not safe to write into the Ansible inventory.")
+            raise SystemExit(f"{key} is not safe to write into the boot script.")
     return values
 
 

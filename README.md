@@ -49,12 +49,12 @@ Every pull request, and every push to `main`, runs the [CI workflow](.github/wor
 
 Two checks run in parallel. The names are the job names, so a ruleset that already requires them does not need a new check:
 
-- **Python tests** runs on Python 3.11, the version the game-night host installs. pip caches the wheels from `requirements.txt` and `requirements-dev.txt`. It runs `ruff check`, `ruff format --check`, and `mypy` (configured in `pyproject.toml`), then the suite.
-- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then `tflint` (`.tflint.hcl`, no AWS calls), then `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, `terraform/iam-bot/`, and `terraform/game-role/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. It parses `ansible/playbook.yml` with `--syntax-check` against `ansible/inventory/syntax-check.yml`, then runs `ansible-lint`. That inventory is only a stand-in. The real one is written on a game night and is gitignored.
+- **Python tests** runs on Python 3.11, the version in the game-night image. pip caches the wheels from `requirements.txt` and `requirements-dev.txt`. It runs `ruff check`, `ruff format --check`, and `mypy` (configured in `pyproject.toml`), then the suite.
+- **Terraform and Ansible** checks formatting with `terraform fmt -check`, then `tflint` (`.tflint.hcl`, no AWS calls), then `terraform init -backend=false` and `terraform validate` in `terraform/`, `terraform/backup/`, `terraform/state/`, `terraform/iam-bot/`, and `terraform/game-role/` with `enable_aws` false. `-backend=false` does not read `backend.hcl` and does not call the state bucket. The job name still says Ansible so the branch ruleset does not have to change. Ansible itself is gone. The host boots a container from cloud-init. Image builds are a separate workflow, [image.yml](.github/workflows/image.yml), and only run when the app, the Dockerfile, or the host package changed. That workflow is not a required check.
 
 A newer push to the same branch cancels the run that is still going, so an outdated commit does not spend the rest of its minutes.
 
-Run the same checks from the repository root. Terraform 1.10 or newer is required, because the S3 backend locks state with `use_lockfile` (CI uses 1.16.5). The Ansible tools below install on Python 3.11.
+Run the same checks from the repository root. Terraform 1.10 or newer is required, because the S3 backend locks state with `use_lockfile` (CI uses 1.16.5).
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
@@ -76,15 +76,11 @@ terraform -chdir=terraform/iam-bot init -backend=false -input=false
 terraform -chdir=terraform/iam-bot validate -var=enable_aws=false
 terraform -chdir=terraform/game-role init -backend=false -input=false
 terraform -chdir=terraform/game-role validate -var=enable_aws=false
-
-pip install 'ansible-core==2.19.14' 'ansible-lint==26.9.0'
-ansible-playbook ansible/playbook.yml --syntax-check -i ansible/inventory/syntax-check.yml
-ansible-lint ansible/playbook.yml --offline
 ```
 
 ## Repository security
 
-The actions in the CI workflow are pinned to commit SHAs. [`.github/dependabot.yml`](.github/dependabot.yml) opens weekly pull requests for Python requirements, those action pins, and the Terraform providers. How to report a vulnerability privately is in [`SECURITY.md`](SECURITY.md).
+The actions in the CI workflow and the image workflow are pinned to commit SHAs. [`.github/dependabot.yml`](.github/dependabot.yml) opens weekly pull requests for Python requirements, those action pins, the Terraform providers, and the Docker base image. How to report a vulnerability privately is in [`SECURITY.md`](SECURITY.md).
 
 Branch protection, Dependabot alerts, secret scanning, and private vulnerability reporting are switches in the GitHub settings. They are not changed by a pull request. The clicks, and what each one protects against, are in [docs/repo-security.md](docs/repo-security.md).
 
@@ -142,23 +138,31 @@ The owner shares a game with a link. This does not look people up by email, so i
 
 Anyone who has claimed a seat can enter a round. Only the owner can undo a round, fix the last round, create or change the invite, or remove someone. There is no separate delete-game action.
 
+## The scorekeeper image
+
+GitHub Actions builds `Dockerfile` and publishes `ghcr.io/sixofone/dutch-blitz`. A pull request only builds. A push to `main`, and a manual run of the Image workflow, push a `sha-<short>` tag. `latest` is pushed only from `main`. The game-night host does not run `latest`. `app_image` has to be a `sha-` tag or a `sha256` digest.
+
+The workflow logs in with `GITHUB_TOKEN`. There is no personal access token. The Dockerfile sets `org.opencontainers.image.source` to this repository, which is how GitHub links the package to the repo when the workflow creates it. Linking by hand is only needed if the package page does not already show the repository.
+
+GitHub's documentation disagrees with itself about the first publish. The Actions guide says a package created by `GITHUB_TOKEN` inherits the repository visibility, so this public repo should produce a public package and the instance can `docker pull` with no registry login. The Container registry guide still says a package is private until you change it, and that making it public cannot be undone. After the first push, open the package settings. If the visibility is already Public, leave it. If it is Private, change it to Public or the instance cannot pull it. Anonymous pulls work only for a public container package.
+
 ## Game night on EC2
 
 A night is one `t3.small` in `us-east-2` (Amazon Linux 2023) for a few hours, then the instance is deleted. Scores are copied to an S3 bucket that stays. Three hours is about **$0.10**: the instance is about $0.021 an hour, and the disk and a small SQLite upload add a few cents. The bucket is pennies a month and is not part of that teardown.
 
-From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.10 or newer and `ansible-playbook` on your PATH. No extra Python package is required. The controller uses the standard library. 1.10 is the first release that locks S3 state with `use_lockfile`. CI uses 1.16.5.
+From the repository root, with [Terraform](https://developer.hashicorp.com/terraform/install) 1.10 or newer. No extra Python package is required. The controller uses the standard library. 1.10 is the first release that locks S3 state with `use_lockfile`. CI uses 1.16.5. The host does not install the app with Ansible. Cloud-init pulls a published image.
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 ```
 
-Edit the copy: set `ssh_ingress_cidr` to your public IP as a `/32`, and set `backup_bucket_name` to a globally unique name. Leave `enable_aws = true` until the night is over. Put `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the environment or in the gitignored `.env`. `CLERK_DEV_BYPASS` must be off or `up` refuses to run.
+Edit the copy: set `ssh_ingress_cidr` to your public IP as a `/32`, and set `backup_bucket_name` to a globally unique name. Leave `enable_aws = true` until the night is over. Put `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the environment or in the gitignored `.env`. `CLERK_DEV_BYPASS` must be off or `up` refuses to run. Copy `terraform/app.auto.tfvars.example` to `terraform/app.auto.tfvars` and set `app_image` to the `sha-` tag or digest from the image workflow. Do not put `app_image` or the Clerk keys in `terraform.tfvars`. That file is shared with stacks that do not declare those variables, and the keys would be committed if that file were ever tracked. `up` passes the keys as `TF_VAR_clerk_publishable_key` and `TF_VAR_clerk_secret_key`.
 
 ```bash
 PYTHONPATH=src python3 -m dutch_blitz_host up
 ```
 
-`up` creates the backup bucket if needed, starts the instance, installs the app, restores the latest snapshot, and prints an `https://` URL. Send that URL to the table. Caddy serves it with a certificate.
+`up` creates the backup bucket if needed, starts the instance, and waits until cloud-init has pulled the image, restored the latest snapshot, and started Caddy. It then prints an `https://` URL. Send that URL to the table. Caddy on the host serves it with a certificate and proxies to the container, which listens on `127.0.0.1:8000` only.
 
 With these lines in `terraform.tfvars`, the URL is always **https://blitz.sixofonedev.com**:
 
@@ -167,13 +171,13 @@ dns_zone_name   = "sixofonedev.com"
 dns_record_name = "blitz"
 ```
 
-`up` creates an A record for that name, TTL 60 seconds, pointing at the new public IP. It waits until the authoritative nameservers and the public resolvers (1.1.1.1 and 8.8.8.8) answer with that IP, then Caddy requests a certificate. That is the Mac's path, and it is the default. On a network that intercepts port 53, set `DUTCH_BLITZ_DNS_MODE=doh`. The wait then uses DNS over HTTPS (`https://dns.google/resolve`, then Cloudflare) and, when the AWS CLI can read the zone, checks the A record with Route 53 `ListResourceRecordSets`. The same HTTPS path runs on its own when a classic lookup returns an address in `198.18.0.0/15` or an empty answer. A real but stale address stays on port 53. `down` deletes the A record with the instance. The hosted zone stays. Terraform looks the zone up by name and does not create it, destroy it, or change its NS, SOA, or the Clerk records (`clerk`, `accounts`, `clkmail`, `clk._domainkey`, `clk2._domainkey`).
+`up` creates an A record for that name, TTL 60 seconds, pointing at the new public IP. It waits until the authoritative nameservers and the public resolvers (1.1.1.1 and 8.8.8.8) answer with that IP. The boot script does its own shorter check against DNS over HTTPS and does not start Caddy until that name is the instance's public IP. That laptop wait is the Mac's path, and it is the default. On a network that intercepts port 53, set `DUTCH_BLITZ_DNS_MODE=doh`. The wait then uses DNS over HTTPS (`https://dns.google/resolve`, then Cloudflare) and, when the AWS CLI can read the zone, checks the A record with Route 53 `ListResourceRecordSets`. The same HTTPS path runs on its own when a classic lookup returns an address in `198.18.0.0/15` or an empty answer. A real but stale address stays on port 53. `down` deletes the A record with the instance. The hosted zone stays. Terraform looks the zone up by name and does not create it, destroy it, or change its NS, SOA, or the Clerk records (`clerk`, `accounts`, `clkmail`, `clk._domainkey`, `clk2._domainkey`).
 
 Add `https://blitz.sixofonedev.com` once as an allowed origin in the [Clerk dashboard](https://dashboard.clerk.com) (and under Domains if the production instance asks). Later nights reuse that origin. The controller `.env` holds the production `pk_live_` / `sk_live_` keys. The app reads the Frontend API host from the publishable key, which is `clerk.sixofonedev.com`.
 
 Leave `dns_zone_name` empty to keep the previous hostname, `<public-ipv4>.sslip.io`. That name changes every night, so the Clerk allowed origin has to be updated to match. Set `domain` only when you are pointing some other name at the instance yourself.
 
-If this host already has a score file, configure uploads that file before the restore so a second configure does not roll the night backward. If the first S3 call fails, the instance role can take a few seconds to become usable; run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again.
+The boot script uploads the local score file before it restores, so running it again does not roll the night backward. The first S3 call can fail while the instance role is still becoming usable. The script retries that call. If it still fails, run `PYTHONPATH=src python3 -m dutch_blitz_host configure` again. `configure` applies the game-night stack (the instance is not replaced; user data changes are ignored) and pipes the current boot script over SSH. A host that is already up does not pull a new `app_image` on `up`. `up` only waits for the first-boot cloud-init. Put the new pin in `terraform/app.auto.tfvars` and run `configure`.
 
 When the night is over:
 
@@ -211,7 +215,7 @@ The instance is launched with `instance_initiated_shutdown_behavior = "terminate
 
 After a self-terminate, the blitz A record and the game-night Terraform state still describe the dead instance. Phones will fail to connect. Run `down` when you see the shutdown email. It removes the DNS record and the state. The next `up` creates a new instance. Until one of those, the name is stale.
 
-The check can be up to `idle_check_minutes` late (default 15). Change the numbers in `terraform/terraform.tfvars`, then run `configure` on a host that is already up, or let the next `up` install them. `up` does not apply `terraform/game-role`.
+The check can be up to `idle_check_minutes` late (default 15). Change the numbers in `terraform/terraform.tfvars`, then run `configure` on a host that is already up, or let the next `up` install them. `configure` rewrites `/etc/dutch-blitz/idle.env` and the timer. `up` does not apply `terraform/game-role`.
 
 A night that is already running when this is first applied does not yet have the timer, and it does not yet terminate on shutdown. `down` it, apply `terraform/game-role`, confirm the email, then `up`. The bot cannot change shutdown behavior on a running instance (`ec2:ModifyInstanceAttribute` is not in its policy). The next launch sends the setting with `RunInstances`.
 
@@ -228,7 +232,7 @@ terraform -chdir=terraform/game-role apply -var-file=../terraform.tfvars
 3. Open the AWS confirmation message and confirm the subscription. Until you do, publishes succeed and no mail arrives.
 4. Do not re-apply `terraform/iam-bot` for this change. The bot policy is unchanged. `up` and `down` do not call SNS. `down` uses `ec2:DescribeInstances`, which the bot already has. Details are in [docs/bot-iam.md](docs/bot-iam.md).
 
-`configure` installs the timer. The topic name on the host is `<name_prefix>-idle`. The host builds the ARN from that name, the region, and the account id in the instance metadata. The account id is not in git.
+Cloud-init installs the timer. The topic name on the host is `<name_prefix>-idle`. The host builds the ARN from that name, the region, and the account id in the instance metadata. The account id is not in git.
 
 State for every root is an object in one S3 bucket, shared by the Mac and the Linux assistant. The bucket name is not in git. Copy `terraform/backend.hcl.example` to `terraform/backend.hcl` and follow [docs/remote-state.md](docs/remote-state.md) once. Bootstrap `terraform/state` with a gitignored `terraform/state/bootstrap_override.tf` that contains `backend "local" {}`, init, and apply. `init -backend=false` and then apply stops with `Backend initialization required`, because the s3 backend block is still there and was not initialized. Delete the override, then `terraform init -migrate-state -backend-config=backend.hcl` for each root that already has a local `terraform.tfstate`. Compare `terraform state list` after that init with `terraform show` of the state files copied aside before migration. `terraform state list` fails until init has run. `up` and `down` pass that backend file into `terraform init`. CI keeps using `init -backend=false` and `validate`, and does not contact the bucket.
 
@@ -242,7 +246,7 @@ On AWS, before the first `up`:
 - If the assistant also runs `up` or `down`, add every address that machine might egress from as a `/32` in `ssh_ingress_cidrs`. `ssh_ingress_cidr` stays the first machine. HTTP and HTTPS stay open.
 - Both operators keep the same tfvars values for the shared settings `ssh_ingress_cidrs` and `extra_ssh_public_keys`. State is shared. A different list on one machine makes that machine's apply rewrite the security group or the instance user data of the night the other machine is running.
 
-`extra_ssh_public_keys` is a list of `ssh-ed25519` or `ssh-rsa` public keys. When it is non-empty, the instance user data is a `#cloud-config` `ssh_authorized_keys` block for the image default user, which on Amazon Linux 2023 is `ec2-user`. The `neo-atari` key pair is still installed. An empty list leaves user data unset, so a night that is already up is not replaced. `user_data_replace_on_change` is false. Put the assistant's public key in that list before the next `up`, and point `DUTCH_BLITZ_SSH_KEY` at the matching private key. Cloud-init reads user data on first boot.
+`extra_ssh_public_keys` is a list of `ssh-ed25519` or `ssh-rsa` public keys. When it is non-empty, cloud-init also gets a `#cloud-config` `ssh_authorized_keys` block for the image default user, which on Amazon Linux 2023 is `ec2-user`. The `neo-atari` key pair is still installed. An empty list is the boot script alone. `user_data_replace_on_change` is false, and Terraform ignores later user-data changes, so editing the script or the key list does not stop or replace a night that is already up. Cloud-init reads user data on first boot. Put the assistant's public key in that list before the next `up`, and point `DUTCH_BLITZ_SSH_KEY` at the matching private key. `configure` re-runs the boot script; it does not add SSH keys to an instance that has already booted.
 
 ### Credentials for the Linux assistant
 
@@ -319,7 +323,7 @@ terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
 
 `down` never runs that command. `--skip-backup` exists for a host that is already gone; scores saved after the last upload are not copied.
 
-`terraform.tfvars`, `backend.hcl`, Terraform state, generated files in `ansible/inventory/` (except `syntax-check.yml`), `.env`, and `*.pem` files are gitignored. The example tfvars and `backend.hcl.example` have placeholders only.
+`terraform.tfvars`, `app.auto.tfvars`, `backend.hcl`, Terraform state, `.env`, and `*.pem` files are gitignored. The example tfvars and `backend.hcl.example` have placeholders only. Clerk keys are in the instance user data and in the Terraform state object. The state bucket is private. Do not put the keys in a file you might commit.
 
 ## Rules encoded here
 
@@ -360,7 +364,9 @@ app/views.py       totals and the words on the page
 app/templates/     server-rendered HTML
 app/static/        CSS, score form, and Clerk cookie refresh
 src/dutch_blitz_host/  game-night CLI (apply, configure, backup, destroy, idle shutdown)
-terraform/         EC2 host and blitz A record, destroyed by down; looks up the instance profile
+Dockerfile         scorekeeper image, published to ghcr.io/sixofone/dutch-blitz
+terraform/         EC2 host, cloud-init, and blitz A record, destroyed by down; looks up the instance profile
+terraform/templates/cloud-init.sh.tftpl  boot script Terraform renders into user data
 terraform/backup/  S3 snapshot bucket, kept across nights
 terraform/game-role/ instance role, instance profile, and idle SNS topic (you apply this; down does not)
 terraform/state/   bootstrap bucket for Terraform state (you apply this)
@@ -368,12 +374,12 @@ terraform/iam-bot/ bot user, least-privilege policy, and $10 budget (you apply t
 docs/remote-state.md  one-time migration from local tfstate
 docs/bot-iam.md    what the bot may do, and what could not be scoped tightly
 docs/repo-security.md  GitHub settings to turn on by hand, and what each one stops
-ansible/           install, Caddy, sshd, backup timer, idle shutdown timer
-.github/workflows/ci.yml  tests, ruff, mypy, and static infrastructure checks
-AGENTS.md          rules a coding agent follows before finishing
+.github/workflows/ci.yml  ruff, mypy, pytest, tflint, and terraform validate
+.github/workflows/image.yml  build the image; push it on main
 .github/dependabot.yml  weekly pull requests for dependency updates
 SECURITY.md        how to report a vulnerability in private
 tests/             pytest
+AGENTS.md          notes for an assistant changing this repo
 ```
 
 The pages are server-rendered. JavaScript shows the round score while you type, reveals extra name fields, keeps a scroll wheel from changing a focused number, and, when Clerk is configured, mounts sign-in and refreshes the session cookie.

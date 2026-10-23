@@ -53,15 +53,55 @@ locals {
   public_hostname     = local.dns_fqdn != "" ? local.dns_fqdn : local.manual_domain
   reserved_dns_labels = ["clerk", "accounts", "clkmail"]
   manage_dns          = var.enable_aws && local.dns_zone != ""
-  # Rendered only when extra_ssh_public_keys is non-empty, so an instance
-  # launched without it does not get a user_data change. ssh_authorized_keys
-  # is applied to the image default user. On Amazon Linux 2023 that user is
-  # ec2-user. The key pair named by key_name is still installed.
-  extra_ssh_user_data = length(var.extra_ssh_public_keys) == 0 ? null : join("\n", concat(
+  # Boot script. Clerk keys are sensitive, so this value is sensitive and
+  # Terraform will not print it in a plan. It is still stored in state,
+  # because user_data is part of the instance.
+  boot_script = templatefile("${path.module}/templates/cloud-init.sh.tftpl", {
+    app_image               = var.app_image
+    clerk_publishable_key   = var.clerk_publishable_key
+    clerk_secret_key        = var.clerk_secret_key
+    app_hostname            = local.public_hostname
+    acme_email              = trimspace(var.acme_email)
+    backup_bucket           = var.backup_bucket_name
+    idle_warn_minutes       = var.idle_warn_minutes
+    idle_shutdown_minutes   = var.idle_shutdown_minutes
+    uptime_warn_minutes     = var.uptime_warn_minutes
+    uptime_shutdown_minutes = var.uptime_shutdown_minutes
+    idle_snooze_minutes     = var.idle_snooze_minutes
+    idle_check_minutes      = var.idle_check_minutes
+    idle_topic_name         = "${var.name_prefix}-idle"
+    aws_region              = var.aws_region
+  })
+  # ssh_authorized_keys is applied to the image default user. On Amazon
+  # Linux 2023 that user is ec2-user. The key pair named by key_name is
+  # still installed. An empty list omits this part. Cloud-init reads it
+  # on first boot only.
+  ssh_cloud_config = length(var.extra_ssh_public_keys) == 0 ? "" : join("\n", concat(
     ["#cloud-config", "ssh_authorized_keys:"],
     [for key in var.extra_ssh_public_keys : "  - ${jsonencode(key)}"],
     [""],
   ))
+  user_data = local.ssh_cloud_config == "" ? local.boot_script : join("\n", [
+    "Content-Type: multipart/mixed; boundary=\"DUTCH-BLITZ-BOOT\"",
+    "MIME-Version: 1.0",
+    "",
+    "--DUTCH-BLITZ-BOOT",
+    "Content-Type: text/cloud-config; charset=\"us-ascii\"",
+    "MIME-Version: 1.0",
+    "Content-Transfer-Encoding: 7bit",
+    "Content-Disposition: attachment; filename=\"cloud-config.txt\"",
+    "",
+    local.ssh_cloud_config,
+    "--DUTCH-BLITZ-BOOT",
+    "Content-Type: text/x-shellscript; charset=\"us-ascii\"",
+    "MIME-Version: 1.0",
+    "Content-Transfer-Encoding: 7bit",
+    "Content-Disposition: attachment; filename=\"boot.sh\"",
+    "",
+    local.boot_script,
+    "--DUTCH-BLITZ-BOOT--",
+    "",
+  ])
 }
 
 resource "null_resource" "local_ready" {
@@ -134,6 +174,22 @@ resource "null_resource" "game_night_checks" {
         )
       )
       error_message = "Set alert_email in terraform.tfvars to a real address. Apply terraform/game-role and confirm the SNS subscription before the first night. The instance cannot send idle mail without that topic. alerts@example.com is a placeholder."
+    }
+
+    precondition {
+      condition     = !var.enable_aws || var.app_image != "ghcr.io/sixofone/dutch-blitz:sha-0000000"
+      error_message = "Set app_image in terraform/app.auto.tfvars to the sha- tag or digest published by the image workflow. sha-0000000 is only a placeholder so plans do not float on latest."
+    }
+
+    precondition {
+      condition = (
+        !var.enable_aws ||
+        (
+          length(trimspace(var.clerk_publishable_key)) > 0 &&
+          length(trimspace(var.clerk_secret_key)) > 0
+        )
+      )
+      error_message = "Set CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in the environment or .env and run up or configure. Those commands pass the keys as TF_VAR_clerk_publishable_key and TF_VAR_clerk_secret_key. Do not commit them."
     }
   }
 }
@@ -229,12 +285,17 @@ resource "aws_instance" "game" {
   vpc_security_group_ids      = [aws_security_group.game[0].id]
   iam_instance_profile        = data.aws_iam_instance_profile.game[0].name
   associate_public_ip_address = true
-  user_data                   = local.extra_ssh_user_data
-  # false is the provider default. Set it so a later key edit cannot
-  # destroy the instance. Changing user_data on a running instance is a
-  # stop/start only when the list is non-empty; an empty list leaves
-  # user_data null and does not touch an existing night.
+  user_data                   = local.user_data
+  # false so an edit cannot destroy the instance. ignore_changes below
+  # also stops Terraform from stopping the instance when the script
+  # changes. A stop would release the public IP. Cloud-init reads
+  # user_data on first boot only. `configure` pipes the current script
+  # over SSH when a night is already up.
   user_data_replace_on_change = false
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
   # terminate, not stop. `shutdown -h now` on the host powers the OS off.
   # EC2 then deletes the instance, and delete_on_termination deletes the
   # root volume, so compute and disk billing both stop. Stop would leave

@@ -47,7 +47,7 @@ variable "ssh_ingress_cidrs" {
 }
 
 variable "extra_ssh_public_keys" {
-  description = "SSH public keys added to ec2-user at boot, besides the EC2 key pair. Empty leaves user_data unset. Both operators keep the same list in the shared tfvars."
+  description = "SSH public keys added to ec2-user at boot, besides the EC2 key pair. Empty omits the cloud-config part; the boot script is still user data. Both operators keep the same list in the shared tfvars."
   type        = list(string)
   default     = []
 
@@ -86,14 +86,59 @@ variable "dns_record_name" {
   default     = "blitz"
 }
 
-# tflint-ignore: terraform_unused_declarations  # shared tfvars; this root only validates the value
 variable "acme_email" {
-  description = "Optional email for Let's Encrypt expiry notices. Leave empty to omit it."
+  description = "Optional email for Let's Encrypt expiry notices. Leave empty to omit it. Caddy still requests a certificate either way."
   type        = string
   default     = ""
+
+  validation {
+    condition = (
+      trimspace(var.acme_email) == "" ||
+      can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", trimspace(var.acme_email)))
+    )
+    error_message = "acme_email must be empty or one email address."
+  }
 }
 
-# Idle shutdown. The host's Ansible timer reads these from terraform.tfvars.
+variable "app_image" {
+  description = "Scorekeeper image. Pin ghcr.io/sixofone/dutch-blitz to a sha-<commit> tag or a sha256 digest. Put the real pin in terraform/app.auto.tfvars, not in the shared tfvars file. latest is rejected. The default sha-0000000 is a placeholder and enable_aws refuses it."
+  type        = string
+  default     = "ghcr.io/sixofone/dutch-blitz:sha-0000000"
+
+  validation {
+    condition = (
+      can(regex("^ghcr\\.io/sixofone/dutch-blitz:sha-[0-9a-f]{7,40}$", var.app_image)) ||
+      can(regex("^ghcr\\.io/sixofone/dutch-blitz@sha256:[0-9a-f]{64}$", var.app_image))
+    )
+    error_message = "app_image must be ghcr.io/sixofone/dutch-blitz:sha-<commit> or ghcr.io/sixofone/dutch-blitz@sha256:<64 hex digits>. Do not use latest."
+  }
+}
+
+variable "clerk_publishable_key" {
+  description = "Clerk publishable key. The host CLI passes this from the environment as TF_VAR_clerk_publishable_key. Do not put it in a tfvars file."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = !strcontains(var.clerk_publishable_key, "\n") && !strcontains(var.clerk_publishable_key, "\r")
+    error_message = "clerk_publishable_key must be a single line."
+  }
+}
+
+variable "clerk_secret_key" {
+  description = "Clerk secret key. The host CLI passes this from the environment as TF_VAR_clerk_secret_key. Do not put it in a tfvars file. It is written into user_data and therefore into Terraform state."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = !strcontains(var.clerk_secret_key, "\n") && !strcontains(var.clerk_secret_key, "\r")
+    error_message = "clerk_secret_key must be a single line."
+  }
+}
+
+# Idle shutdown. Cloud-init writes these into /etc/dutch-blitz/idle.env.
 # This stack does not create the SNS topic. terraform/game-role does, so
 # the subscription confirmation survives `down`. Defaults: warn at 60
 # minutes idle or 7 hours up, shut down at 90 minutes idle or 8 hours up.

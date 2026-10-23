@@ -69,16 +69,26 @@ def deployment_env(
     secret_key: str,
     origin: str,
     db_path: str,
+    activity_path: str = "/var/lib/dutch-blitz/last-activity",
+    bind_host: str = "0.0.0.0",
 ) -> str:
-    """Root-owned env file contents. Bypass is always off on the host."""
+    """Env file the container reads. Bypass is always off on the host.
+
+    ``bind_host`` is the address inside the container. The host publishes
+    that port on 127.0.0.1 only, and Caddy is the public listener.
+    """
     _reject_multiline("CLERK_PUBLISHABLE_KEY", publishable_key)
     _reject_multiline("CLERK_SECRET_KEY", secret_key)
     _reject_multiline("CLERK_AUTHORIZED_PARTIES", origin)
+    _reject_multiline("DUTCH_BLITZ_HOST", bind_host)
     if not origin.startswith("https://"):
         raise ValueError("authorized origin must be https")
+    if not activity_path.startswith("/"):
+        raise ValueError("activity path must be absolute")
     lines = [
         f"DUTCH_BLITZ_DB_PATH={db_path}",
-        "DUTCH_BLITZ_HOST=127.0.0.1",
+        f"DUTCH_BLITZ_ACTIVITY_PATH={activity_path}",
+        f"DUTCH_BLITZ_HOST={bind_host}",
         "DUTCH_BLITZ_PORT=8000",
         f"CLERK_PUBLISHABLE_KEY={publishable_key}",
         f"CLERK_SECRET_KEY={secret_key}",

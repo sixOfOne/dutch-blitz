@@ -64,6 +64,8 @@ Use this only if you are looking at **Settings → Branches** instead of Ruleset
 
 The ruleset stores the check name as text. If you change `name:` on either job in `.github/workflows/ci.yml`, edit the ruleset to match. Otherwise `main` waits for a check that will never run.
 
+The infrastructure job is still named **Terraform and Ansible** after Ansible was removed. The name is the string this ruleset matches. Leave it until you edit both the workflow and the ruleset in the same change. The image workflow is not a required check.
+
 ## 2. Dependabot alerts and security updates
 
 `.github/dependabot.yml` schedules ordinary version updates (weekly, minor and patch grouped, at most five open version pull requests per ecosystem). It does not, by itself, turn on vulnerability alerts.
@@ -79,7 +81,7 @@ The dependency graph is already on for a public repository. Alerts need it. You 
 
 Version updates are the `dependabot.yml` file, not a second switch. If this page offers to create a new `dependabot.yml`, skip that. The committed file is the one to keep.
 
-After this file is on `main`, **Insights → Dependency graph → Dependabot** lists the pip, GitHub Actions, and Terraform entries. The first run happens when the file is added, and then every Monday.
+After this file is on `main`, **Insights → Dependency graph → Dependabot** lists the pip, GitHub Actions, Terraform, and Docker entries. The first run happens when the file is added, and then every Monday. The Docker entry tracks the `python:3.11-slim` digest in the Dockerfile. It does not move the game-night `app_image` pin.
 
 Dependabot alerts for GitHub Actions are raised for actions pinned to a version tag such as `@v7`. They are not raised for an action pinned to a commit SHA. The pins in `.github/workflows/ci.yml` are SHAs on purpose (see the comment in that file). The weekly `github-actions` entry in `dependabot.yml` is what moves those pins when a new release is published.
 
