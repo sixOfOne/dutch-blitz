@@ -370,6 +370,10 @@ systemctl enable --now docker
 # not opened. The controller reaches this host through the agent.
 systemctl enable --now amazon-ssm-agent
 
+# The AMI still starts sshd. Port 22 is closed and there is no key, so
+# stop it. Session Manager is the break-glass shell.
+systemctl disable --now sshd
+
 read_configure_env
 resolve_hostname
 write_env_files

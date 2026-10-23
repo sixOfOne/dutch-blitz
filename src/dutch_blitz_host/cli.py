@@ -42,6 +42,23 @@ from dutch_blitz_host.instance_status import (
     valid_instance_id,
     valid_region,
 )
+
+# Importing ssm loads botocore. A missing library has to stop here, with
+# an install command, instead of a traceback from that import.
+try:
+    __import__("boto3")
+    __import__("botocore")
+except ImportError as exc:
+    _missing = (exc.name or "").split(".", 1)[0]
+    if _missing not in {"boto3", "botocore"}:
+        raise
+    print(
+        "boto3 and botocore are not installed, so this controller cannot call SSM.\n"
+        "pip install -r requirements-host.txt",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from None
+
 from dutch_blitz_host.ssm import (
     BACKUP_COMMAND,
     BACKUP_TIMEOUT_SECONDS,

@@ -1,9 +1,12 @@
 """Controller logic for a game-night host. No Terraform and no AWS calls."""
 
 import json
+import os
 import socket
 import sqlite3
 import struct
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -431,6 +434,48 @@ def test_run_shell_script_sends_run_shell_script_and_polls_the_exit_code():
     assert sent["Parameters"]["commands"] == [BACKUP_COMMAND]
     assert sent["Parameters"]["executionTimeout"] == ["300"]
     assert "sk_test_secret" not in json.dumps(sent)
+
+
+def test_missing_ssm_library_prints_the_install_command_and_exits(tmp_path):
+    # A fresh interpreter, with boto3 or botocore hidden, is what a machine
+    # without requirements-host.txt actually does. The CLI has to stop
+    # before botocore's own ImportError becomes a traceback.
+    runner = tmp_path / "missing_ssm.py"
+    runner.write_text(
+        """
+import sys
+
+blocked = sys.argv[1]
+
+class _Block:
+    def find_spec(self, fullname, path, target=None):
+        if fullname == blocked or fullname.startswith(blocked + "."):
+            raise ModuleNotFoundError(f"No module named {fullname}", name=fullname)
+        return None
+
+sys.meta_path.insert(0, _Block())
+sys.argv = ["dutch_blitz_host", "up"]
+import runpy
+runpy.run_module("dutch_blitz_host", run_name="__main__")
+""",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    root = Path(__file__).resolve().parents[1]
+    env["PYTHONPATH"] = os.pathsep.join([str(root / "src"), env.get("PYTHONPATH", "")])
+    for missing in ("boto3", "botocore"):
+        completed = subprocess.run(
+            [sys.executable, str(runner), missing],
+            cwd=tmp_path,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode != 0
+        assert "pip install -r requirements-host.txt" in completed.stderr
+        assert "Traceback" not in completed.stderr
+        assert "Traceback" not in completed.stdout
 
 
 def test_configure_shell_rejects_an_unpinned_image_and_shell_metacharacters():
