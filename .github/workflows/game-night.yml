@@ -14,6 +14,11 @@
 # Select the main branch when you run it. The environment's
 # deployment branch rule is what limits the ref. The session lasts
 # at most one hour.
+#
+# app_image is a sha- tag whose manifest exists. The commit at
+# origin/main is used when that tag was published. Otherwise the
+# workflow reads the moving main tag, then the newest successful
+# Image run on main. Terraform does not receive main or latest.
 name: Game night
 
 on:
@@ -30,12 +35,12 @@ on:
           - backup
           - down
       app_image:
-        description: Image pin. Empty uses the sha- tag of origin/main.
+        description: Optional sha- tag or digest. Empty uses the newest published image.
         type: string
         required: false
         default: ""
 
-# No permissions at workflow scope. The job below sets the two it needs.
+# No permissions at workflow scope. The job below sets the ones it needs.
 permissions: {}
 
 # One night at a time. A second click waits. It does not cancel the
@@ -53,6 +58,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read
 
     steps:
       - name: Check out the repository
@@ -108,41 +114,31 @@ jobs:
         id: image
         env:
           APP_IMAGE_INPUT: ${{ inputs.app_image }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import os
-          import re
           import subprocess
           import sys
 
-          image = os.environ.get("APP_IMAGE_INPUT", "").strip()
-          if not image:
-              subprocess.run(
-                  ["git", "fetch", "--no-tags", "--depth=1", "origin", "main"],
-                  check=True,
-              )
-              full = subprocess.check_output(
-                  ["git", "rev-parse", "FETCH_HEAD"],
-                  text=True,
-              ).strip()
-              short = full[:7]
-              if re.fullmatch(r"[0-9a-f]{7}", short) is None:
-                  print("origin/main did not resolve to a commit.", file=sys.stderr)
-                  sys.exit(1)
-              image = f"ghcr.io/sixofone/dutch-blitz:sha-{short}"
-          pattern = re.compile(
-              r"ghcr\.io/sixofone/dutch-blitz:sha-[0-9a-f]{7,40}"
-              r"|ghcr\.io/sixofone/dutch-blitz@sha256:[0-9a-f]{64}"
+          sys.path.insert(0, "src")
+          from dutch_blitz_host.image_pin import resolve_app_image, write_github_output
+
+          subprocess.run(
+              ["git", "fetch", "--no-tags", "--depth=1", "origin", "main"],
+              check=True,
           )
-          if pattern.fullmatch(image) is None:
-              print(
-                  "app_image must be ghcr.io/sixofone/dutch-blitz:sha-<commit> "
-                  "or ghcr.io/sixofone/dutch-blitz@sha256:<64 hex digits>.",
-                  file=sys.stderr,
-              )
-              sys.exit(1)
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"app_image={image}\n")
+          full = subprocess.check_output(
+              ["git", "rev-parse", "FETCH_HEAD"],
+              text=True,
+          ).strip()
+          image = resolve_app_image(
+              explicit=os.environ.get("APP_IMAGE_INPUT", ""),
+              main_sha=full,
+              github_repository=os.environ["GITHUB_REPOSITORY"],
+              github_token=os.environ.get("GITHUB_TOKEN", ""),
+          )
+          write_github_output(os.environ["GITHUB_OUTPUT"], image)
           print(f"app_image={image}")
           PY
 

@@ -97,7 +97,16 @@ def test_game_night_workflow_is_dispatch_only_and_stores_no_keys():
     assert "set -x" not in text
     assert "role-duration-seconds: 3600" in text
     assert "audience: sts.amazonaws.com" in text
-    assert "sha-[0-9a-f]{7,40}" in text
+    assert "resolve_app_image" in text
+    assert "actions: read" in text
+    assert text.index("Resolve the image pin") < text.index("Run the game-night command")
+    image_workflow = (REPO / ".github" / "workflows" / "image.yml").read_text(encoding="utf-8")
+    assert (
+        image_workflow.count("type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}")
+        == 2
+    )
+    pin = (REPO / "src" / "dutch_blitz_host" / "image_pin.py").read_text(encoding="utf-8")
+    assert "sha-[0-9a-f]{7,40}" in pin
     pins = re.findall(r"uses: \S+@([0-9a-f]{40}) # v\d+\.\d+\.\d+", text)
     assert len(pins) == 4
     assert len(set(pins)) == 4

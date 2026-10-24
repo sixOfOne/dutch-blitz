@@ -142,7 +142,7 @@ Anyone who has claimed a seat can enter a round. Only the owner can undo a round
 
 ## The scorekeeper image
 
-GitHub Actions builds `Dockerfile` and publishes `ghcr.io/sixofone/dutch-blitz`. A pull request only builds. A push to `main`, and a manual run of the Image workflow, push a `sha-<short>` tag. `latest` is pushed only from `main`. The game-night host does not run `latest`. `app_image` has to be a `sha-` tag or a `sha256` digest.
+GitHub Actions builds `Dockerfile` and publishes `ghcr.io/sixofone/dutch-blitz`. A pull request only builds. A push to `main`, and a manual run of the Image workflow, push a `sha-<short>` tag. `main` and `latest` are pushed only from `main`. The game-night host does not run `main` or `latest`. `app_image` has to be a `sha-` tag or a `sha256` digest. The Game night workflow uses the `sha-` tag of `origin/main` when that manifest exists. A Terraform-only commit has no image, so the workflow then reads the revision on the `main` tag, and if that tag is not there yet it uses the newest successful Image run on `main` whose `sha-` manifest exists. It refuses to continue when that manifest is missing, so `up` does not launch an instance that cannot pull.
 
 The workflow logs in with `GITHUB_TOKEN`. There is no personal access token. The Dockerfile sets `org.opencontainers.image.source` to this repository, which is how GitHub links the package to the repo when the workflow creates it. Linking by hand is only needed if the package page does not already show the repository.
 
@@ -324,7 +324,7 @@ terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
 
 ## Game night button
 
-[`.github/workflows/game-night.yml`](.github/workflows/game-night.yml) is the Actions button named **Game night**. It runs `dutch_blitz_host` with `up`, `down`, `backup`, or `status`. It stores no AWS access key. GitHub's OIDC token assumes `dutch-blitz-gha-deployer`, and that role attaches the same two managed policies as `grok-bot-dutch-blitz`. The session lasts at most one hour. The workflow's top-level permissions are empty. The job has `id-token: write` and `contents: read`.
+[`.github/workflows/game-night.yml`](.github/workflows/game-night.yml) is the Actions button named **Game night**. It runs `dutch_blitz_host` with `up`, `down`, `backup`, or `status`. It stores no AWS access key. GitHub's OIDC token assumes `dutch-blitz-gha-deployer`, and that role attaches the same two managed policies as `grok-bot-dutch-blitz`. The session lasts at most one hour. The workflow's top-level permissions are empty. The job has `id-token: write`, `contents: read`, and `actions: read`.
 
 The role trusts `token.actions.githubusercontent.com` when `aud` is `sts.amazonaws.com` and `sub` is one of `repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night` or `repo:sixOfOne/dutch-blitz:environment:game-night`. This repository was created on 2026-10-10 and its OIDC customization reports `use_immutable_subject`, so the live token uses the id form. The name form is what GitHub emits when immutable subjects are off. Both values are this repository and the `game-night` environment. STS does not accept `workflow_ref`, `event_name`, or `ref` as condition keys. The environment's selected-branch rule is what keeps the run on `main`. Re-apply `terraform/gha-deployer` after a trust-policy change, with your own credentials, before the next Game night run.
 
@@ -344,7 +344,7 @@ terraform -chdir=terraform/gha-deployer apply -var-file=terraform.tfvars
 5. Turn on **Required reviewers** and add yourself. Save before any workflow run. A first run that creates the environment for you is not reviewed.
 6. Under **Deployment branches**, choose **Selected branches** and add `main`.
 7. On that environment, add a **variable** (not a secret) named `AWS_ROLE_ARN`. The value is the `role_arn` from step 3.
-8. On that environment, add these **secrets**. GitHub masks them. The workflow writes the two files under the runner temp directory, mode `0600`, and does not echo them. Leave `app_image` and both Clerk keys out of `TERRAFORM_TFVARS`. The workflow sets `TF_VAR_app_image` to the `sha-` tag of `origin/main`, or to the optional image input.
+8. On that environment, add these **secrets**. GitHub masks them. The workflow writes the two files under the runner temp directory, mode `0600`, and does not echo them. Leave `app_image` and both Clerk keys out of `TERRAFORM_TFVARS`. The workflow sets `TF_VAR_app_image` to a published `sha-` tag: the tag of `origin/main` when that image exists, otherwise the last image published by the Image workflow. The optional `app_image` input overrides that pin. The run stops before Terraform when the manifest is missing.
    - `CLERK_PUBLISHABLE_KEY`
    - `CLERK_SECRET_KEY`
    - `TERRAFORM_TFVARS`: the body of the gitignored `terraform/terraform.tfvars`
