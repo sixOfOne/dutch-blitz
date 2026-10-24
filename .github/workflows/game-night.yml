@@ -7,12 +7,13 @@
 # secret. Clerk keys and the gitignored tfvars are environment
 # secrets. This file stores no AWS access key.
 #
-# The role trusts only
+# The role trusts token.actions.githubusercontent.com when aud is
+# sts.amazonaws.com and sub is either
 # repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night
-# with aud sts.amazonaws.com, event_name workflow_dispatch, ref
-# refs/heads/main, and this workflow file on main. Select the main
-# branch when you run it. A pull_request workflow cannot assume the
-# role. The session lasts at most one hour.
+# or repo:sixOfOne/dutch-blitz:environment:game-night.
+# Select the main branch when you run it. The environment's
+# deployment branch rule is what limits the ref. The session lasts
+# at most one hour.
 name: Game night
 
 on:

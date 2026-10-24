@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[1]
 ROOT = REPO / "terraform" / "gha-deployer"
 WORKFLOW = REPO / ".github" / "workflows" / "game-night.yml"
 SUBJECT = "repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night"
-WORKFLOW_REF = "sixOfOne/dutch-blitz/.github/workflows/game-night.yml@refs/heads/main"
+NAME_SUBJECT = "repo:sixOfOne/dutch-blitz:environment:game-night"
 INSTANCE = "i-0123456789abcdef0"
 
 
@@ -34,11 +34,18 @@ def test_deployer_trust_is_exact_and_reuses_the_bot_policies():
     assert "sts:AssumeRoleWithWebIdentity" in text
     assert "sts:TagSession" not in text
     assert 'sts:AssumeRole"' not in text
+    start = text.index("StringEquals = {")
+    block = text[start : text.index("}", start)]
+    assert "token.actions.githubusercontent.com:aud" in block
+    assert "token.actions.githubusercontent.com:sub" in block
+    assert "sts.amazonaws.com" in block
+    assert SUBJECT in block
+    assert NAME_SUBJECT in block
+    assert "workflow_ref" not in block
+    assert "event_name" not in block
+    assert ":ref" not in block
     assert SUBJECT in text
-    assert "sts.amazonaws.com" in text
-    assert "workflow_dispatch" in text
-    assert "refs/heads/main" in text
-    assert WORKFLOW_REF in text
+    assert NAME_SUBJECT in text
     assert "max_session_duration = 3600" in text
     assert re.search(r'name\s+=\s+"dutch-blitz-gha-deployer"', text)
     assert "dutch-blitz/gha-deployer/terraform.tfstate" in text
@@ -54,7 +61,6 @@ def test_deployer_trust_is_exact_and_reuses_the_bot_policies():
     assert 'data "tls_certificate" "github"' in text
     policy = (REPO / "docs" / "grok-bot-dutch-blitz-policy.json").read_text(encoding="utf-8")
     assert "gha-deployer" not in policy
-    assert "repo:sixOfOne/dutch-blitz:environment:game-night" not in text
 
 
 def test_game_night_workflow_is_dispatch_only_and_stores_no_keys():
@@ -111,6 +117,7 @@ def test_docs_list_jeremys_setup_in_order():
         assert "TERRAFORM_TFVARS" in text
         assert "BACKEND_HCL" in text
         assert SUBJECT in text
+        assert NAME_SUBJECT in text
         assert "apply -var-file=terraform.tfvars" in text
     assert "terraform/gha-deployer" in agents
     assert "permissions: {}" in agents
