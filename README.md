@@ -142,7 +142,7 @@ Anyone who has claimed a seat can enter a round. Only the owner can undo a round
 
 ## The scorekeeper image
 
-GitHub Actions builds `Dockerfile` and publishes `ghcr.io/sixofone/dutch-blitz`. A pull request only builds. A push to `main`, and a manual run of the Image workflow, push a `sha-<short>` tag. `latest` is pushed only from `main`. The game-night host does not run `latest`. `app_image` has to be a `sha-` tag or a `sha256` digest.
+GitHub Actions builds `Dockerfile` and publishes `ghcr.io/sixofone/dutch-blitz`. A pull request only builds. A push to `main`, and a manual run of the Image workflow, push a `sha-<short>` tag. `main` and `latest` are pushed only from `main`. The game-night host does not run `main` or `latest`. `app_image` has to be a `sha-` tag or a `sha256` digest. The Game night workflow uses the `sha-` tag of `origin/main` when that manifest exists. A Terraform-only commit has no image, so the workflow then reads the revision on the `main` tag, and if that tag is not there yet it uses the newest successful Image run on `main` whose `sha-` manifest exists. It refuses to continue when that manifest is missing, so `up` does not launch an instance that cannot pull.
 
 The workflow logs in with `GITHUB_TOKEN`. There is no personal access token. The Dockerfile sets `org.opencontainers.image.source` to this repository, which is how GitHub links the package to the repo when the workflow creates it. Linking by hand is only needed if the package page does not already show the repository.
 
@@ -193,7 +193,7 @@ PYTHONPATH=src python3 -m dutch_blitz_host down
 
 `down` uploads a final consistent snapshot (Python's `sqlite3` backup API), then destroys the instance. The S3 bucket is a separate Terraform state with `prevent_destroy`, so this command leaves it in place. A timer on the host also uploads about every 15 minutes. `PYTHONPATH=src python3 -m dutch_blitz_host backup` uploads once without tearing the host down.
 
-If the instance already shut itself down, `down` does not try the backup. It still deletes the blitz A record and the Terraform state. `--skip-backup` remains the manual escape when SSM fails and describe cannot tell whether the instance is gone. Scores saved after the last upload are not copied in that case. A tainted or un-id'd instance is looked up by the `Project=dutch-blitz` tag and backed up over SSM. The public IP is not required.
+If the instance already shut itself down, `down` does not try the backup. It still deletes the blitz A record and the Terraform state. `down` runs `terraform init` with the backend file before it reads outputs, so a new machine can see the S3 state from `up`. `--skip-backup` skips that snapshot and still deletes the instance and the blitz record. It is safe when the server never finished booting: cloud-init never installed the host package, so there is no score book on the instance. It is also the escape when the host is already gone and describe cannot tell. Scores saved after the last successful upload are not copied. A tainted or un-id'd instance is looked up by the `Project=dutch-blitz` tag and backed up over SSM. The public IP is not required.
 
 ### If the server is left up
 
@@ -320,11 +320,11 @@ To retire the bucket, edit `terraform/backup/main.tf` and remove the `prevent_de
 terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
 ```
 
-`down` never runs that command. `--skip-backup` exists for a host that is already gone; scores saved after the last upload are not copied.
+`down` never runs that command. `--skip-backup` skips the final snapshot. Use it when the server never finished booting, or when the host is already gone. Scores saved after the last upload are not copied.
 
 ## Game night button
 
-[`.github/workflows/game-night.yml`](.github/workflows/game-night.yml) is the Actions button named **Game night**. It runs `dutch_blitz_host` with `up`, `down`, `backup`, or `status`. It stores no AWS access key. GitHub's OIDC token assumes `dutch-blitz-gha-deployer`, and that role attaches the same two managed policies as `grok-bot-dutch-blitz`. The session lasts at most one hour. The workflow's top-level permissions are empty. The job has `id-token: write` and `contents: read`.
+[`.github/workflows/game-night.yml`](.github/workflows/game-night.yml) is the Actions button named **Game night**. It runs `dutch_blitz_host` with `up`, `down`, `backup`, or `status`. It stores no AWS access key. GitHub's OIDC token assumes `dutch-blitz-gha-deployer`, and that role attaches the same two managed policies as `grok-bot-dutch-blitz`. The session lasts at most one hour. The workflow's top-level permissions are empty. The job has `id-token: write`, `contents: read`, and `actions: read`.
 
 The role trusts `token.actions.githubusercontent.com` when `aud` is `sts.amazonaws.com` and `sub` is one of `repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night` or `repo:sixOfOne/dutch-blitz:environment:game-night`. This repository was created on 2026-10-10 and its OIDC customization reports `use_immutable_subject`, so the live token uses the id form. The name form is what GitHub emits when immutable subjects are off. Both values are this repository and the `game-night` environment. STS does not accept `workflow_ref`, `event_name`, or `ref` as condition keys. The environment's selected-branch rule is what keeps the run on `main`. Re-apply `terraform/gha-deployer` after a trust-policy change, with your own credentials, before the next Game night run.
 
@@ -344,12 +344,12 @@ terraform -chdir=terraform/gha-deployer apply -var-file=terraform.tfvars
 5. Turn on **Required reviewers** and add yourself. Save before any workflow run. A first run that creates the environment for you is not reviewed.
 6. Under **Deployment branches**, choose **Selected branches** and add `main`.
 7. On that environment, add a **variable** (not a secret) named `AWS_ROLE_ARN`. The value is the `role_arn` from step 3.
-8. On that environment, add these **secrets**. GitHub masks them. The workflow writes the two files under the runner temp directory, mode `0600`, and does not echo them. Leave `app_image` and both Clerk keys out of `TERRAFORM_TFVARS`. The workflow sets `TF_VAR_app_image` to the `sha-` tag of `origin/main`, or to the optional image input.
+8. On that environment, add these **secrets**. GitHub masks them. The workflow writes the two files under the runner temp directory, mode `0600`, and does not echo them. Leave `app_image` and both Clerk keys out of `TERRAFORM_TFVARS`. The workflow sets `TF_VAR_app_image` to a published `sha-` tag: the tag of `origin/main` when that image exists, otherwise the last image published by the Image workflow. The optional `app_image` input overrides that pin. The run stops before Terraform when the manifest is missing.
    - `CLERK_PUBLISHABLE_KEY`
    - `CLERK_SECRET_KEY`
    - `TERRAFORM_TFVARS`: the body of the gitignored `terraform/terraform.tfvars`
    - `BACKEND_HCL`: the body of the gitignored `terraform/backend.hcl`
-9. **Actions → Game night → Run workflow**. Branch `main`, action `status`. Approve the review when GitHub asks. Then `up`, `backup`, or `down` the same way. One run at a time: a second click waits, and it does not cancel the run that is already going. The job limit is 50 minutes, inside the one-hour role session.
+9. **Actions → Game night → Run workflow**. Branch `main`, action `status`. Approve the review when GitHub asks. Then `up`, `backup`, or `down` the same way. One run at a time: a second click waits, and it does not cancel the run that is already going. The job limit is 50 minutes, inside the one-hour role session. `down` initializes the S3 backend before it reads outputs, so the state `up` wrote is visible on a new runner. Leave `skip_backup` off. Turn it on only with `down`, and only when the server never finished booting: cloud-init never installed `dutch_blitz_host`, so there is no score book to upload. The workflow then runs `down --skip-backup`. A night that did boot keeps the final snapshot.
 
 `status` prints the public outputs and the SSM ping. It does not print `cloud_init`. A change to `docs/grok-bot-dutch-blitz-policy.json` is applied with `terraform/iam-bot` only. The deployer role uses those same policies, so it sees the new document without another apply here. Re-apply `terraform/gha-deployer` when the trust policy or the OIDC provider setting changes. `ssm:SendCommand` on this role runs root commands on instances tagged `Project=dutch-blitz`, the same as the bot. There is no `ssm:StartSession`.
 

@@ -130,5 +130,5 @@ Do these steps in order, after `terraform/gha-deployer` is applied with your own
 6. Under **Deployment branches and tags**, choose **Selected branches** and add `main`.
 7. Add an environment **variable** named `AWS_ROLE_ARN`. Paste the `role_arn`. Do not put that ARN in a secret.
 8. Add environment **secrets** `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `TERRAFORM_TFVARS`, and `BACKEND_HCL`. `TERRAFORM_TFVARS` is the body of the gitignored `terraform/terraform.tfvars`, without Clerk keys and without `app_image`. `BACKEND_HCL` is the body of the gitignored `terraform/backend.hcl`. The workflow writes those two files in the runner temp directory and does not echo them.
-9. **Actions → Game night → Run workflow**. Choose branch `main` and action `status`. Approve the pending deployment. Then run `up`, `backup`, or `down` the same way. The concurrency group is `game-night` and a second run waits. The role session is one hour.
+9. **Actions → Game night → Run workflow**. Choose branch `main` and action `status`. Approve the pending deployment. Then run `up`, `backup`, or `down` the same way. The concurrency group is `game-night` and a second run waits. The role session is one hour. Leave `skip_backup` off. Turn it on only with `down` when the server never finished booting, so there is no score book to upload. The workflow then passes `--skip-backup`.
 

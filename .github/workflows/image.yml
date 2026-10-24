@@ -86,6 +86,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=sha,prefix=sha-,format=short
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       # push: false leaves the image on this runner. The runner is thrown
@@ -138,8 +139,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # sha-<short> is the first seven characters of the commit, prefixed
-      # so a glance tells a pin from a version number. latest is added
-      # only on main. The host does not run latest. Terraform rejects it.
+      # so a glance tells a pin from a version number. main and latest
+      # are added only on main. main is the moving tag the Game night
+      # workflow reads to find the last published sha- pin. The host
+      # does not run main or latest. Terraform rejects both.
       - name: Image tags and labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -147,6 +150,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=sha,prefix=sha-,format=short
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       # provenance and sbom are off because the next step writes the

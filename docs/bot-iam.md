@@ -156,5 +156,5 @@ Do these steps yourself, in this order, with your own credentials. The clicks on
 6. **Deployment branches**: Selected branches, and add `main`.
 7. Environment **variable** (not a secret) `AWS_ROLE_ARN` = the `role_arn`.
 8. Environment **secrets** `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `TERRAFORM_TFVARS` (the gitignored `terraform/terraform.tfvars` body, with no Clerk keys and no `app_image`), and `BACKEND_HCL` (the gitignored `terraform/backend.hcl` body).
-9. After the workflow file is on `main`: **Actions → Game night → Run workflow**, branch `main`, action `status`. Approve the review. Then `up`, `backup`, or `down` the same way.
+9. After the workflow file is on `main`: **Actions → Game night → Run workflow**, branch `main`, action `status`. Approve the review. Then `up`, `backup`, or `down` the same way. Leave `skip_backup` off. Turn it on only with `down` when the server never finished booting, so there is no score book to upload. The workflow then passes `--skip-backup`.
 
