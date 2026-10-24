@@ -11,14 +11,19 @@
 # This role sees the new document because it is the same policy. Re-apply
 # this root when the trust policy or the OIDC provider setting changes.
 #
-# This repository was created on 2026-10-10. GitHub sets
-# use_immutable_subject, so the token sub is the id form below. The
-# trust policy requires that exact string, plus aud, event_name,
-# ref, and workflow_ref. All five are StringEquals. There is no
-# wildcard and no pattern operator. A pull_request job is a different
-# event_name, and a reusable workflow's job_workflow_ref is not a
-# condition here: this workflow is not reusable, and requiring that
-# claim would make AssumeRole fail.
+# STS condition keys for token.actions.githubusercontent.com are aud
+# and sub. The claims workflow_ref, event_name, and ref are in the
+# token and are not STS condition keys. A condition on one of them
+# makes AssumeRoleWithWebIdentity fail with Not authorized. The
+# game-night environment's selected-branch rule keeps the run on main.
+#
+# sub is StringEquals on two subjects, so either format matches.
+# This repository was created on 2026-10-10. Its OIDC customization
+# reports use_immutable_subject, so the live token uses the id form
+# repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night.
+# The name form repo:sixOfOne/dutch-blitz:environment:game-night is
+# what GitHub emits when immutable subjects are off. Both values are
+# this repository and the game-night environment. There is no wildcard.
 terraform {
   required_version = ">= 1.10.0"
 
@@ -67,10 +72,6 @@ locals {
     var.github_oidc_provider_arn != ""
     ? var.github_oidc_provider_arn
     : try(aws_iam_openid_connect_provider.github[0].arn, "")
-  )
-  github_subject = "repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night"
-  github_workflow_ref = (
-    "sixOfOne/dutch-blitz/.github/workflows/game-night.yml@refs/heads/main"
   )
 }
 
@@ -138,11 +139,11 @@ resource "aws_iam_role" "deployer" {
         }
         Condition = {
           StringEquals = {
-            "token.actions.githubusercontent.com:aud"          = "sts.amazonaws.com"
-            "token.actions.githubusercontent.com:sub"          = local.github_subject
-            "token.actions.githubusercontent.com:event_name"   = "workflow_dispatch"
-            "token.actions.githubusercontent.com:ref"          = "refs/heads/main"
-            "token.actions.githubusercontent.com:workflow_ref" = local.github_workflow_ref
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:sixOfOne@50211093/dutch-blitz@1413603165:environment:game-night",
+              "repo:sixOfOne/dutch-blitz:environment:game-night",
+            ]
           }
         }
       }
