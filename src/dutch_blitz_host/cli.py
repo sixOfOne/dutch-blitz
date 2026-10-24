@@ -128,13 +128,25 @@ def build_parser() -> argparse.ArgumentParser:
     destroy.add_argument(
         "--skip-backup",
         action="store_true",
-        help="Destroy even if the instance cannot be reached. Scores since the last upload are lost.",
+        help=(
+            "Destroy without a final snapshot. Safe when the server never "
+            "finished booting, or the host is already gone. Scores since "
+            "the last upload are not copied."
+        ),
     )
     _add_init(destroy)
 
     down = subparsers.add_parser("down", help="Same as destroy")
     down.add_argument("--dry-run", action="store_true")
-    down.add_argument("--skip-backup", action="store_true")
+    down.add_argument(
+        "--skip-backup",
+        action="store_true",
+        help=(
+            "Destroy without a final snapshot. Safe when the server never "
+            "finished booting, or the host is already gone. Scores since "
+            "the last upload are not copied."
+        ),
+    )
     _add_init(down)
 
     status = subparsers.add_parser(
@@ -492,6 +504,11 @@ def cmd_backup(
     """
     tfvars = load_tfvars()
     if instance_id is None:
+        # Same fresh-runner init as down. terraform output cannot see the
+        # S3 state until the backend is initialized.
+        code = _init_terraform(NIGHT_DIR, var_file=_tfvars_file(), do_init=True)
+        if code != 0:
+            return code
         outputs = terraform_outputs(NIGHT_DIR)
         _ip, _hostname, _bucket, instance_id = require_aws_outputs(outputs)
     if region is None:
@@ -950,6 +967,15 @@ def cmd_destroy(*, dry_run: bool, skip_backup: bool, do_init: bool) -> int:
         return 0
     gone = False
     if not skip_backup:
+        # A new machine, including a GitHub runner, has no .terraform
+        # directory. terraform output and terraform show both fail until
+        # the S3 backend is initialized, and that failure is reported as
+        # "Terraform state could not be read" even when up already wrote
+        # the state. The working directory is this night stack. Init
+        # here, then read. The destroy below inits again.
+        code = _init_terraform(NIGHT_DIR, var_file=_tfvars_file(), do_init=do_init)
+        if code != 0:
+            return code
         plan = instance_already_gone(tfvars)
         if plan.refuse:
             print(plan.detail, file=sys.stderr)
@@ -971,7 +997,8 @@ def cmd_destroy(*, dry_run: bool, skip_backup: bool, do_init: bool) -> int:
             if code != 0:
                 print(
                     "Final backup failed, so the instance was left up. "
-                    "Fix SSM or S3, or re-run with --skip-backup if the host is already gone.",
+                    "Fix SSM or S3, or re-run with --skip-backup when the host "
+                    "is already gone or the server never finished booting.",
                     file=sys.stderr,
                 )
                 return code

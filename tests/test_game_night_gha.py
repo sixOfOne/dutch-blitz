@@ -100,6 +100,16 @@ def test_game_night_workflow_is_dispatch_only_and_stores_no_keys():
     assert "resolve_app_image" in text
     assert "actions: read" in text
     assert text.index("Resolve the image pin") < text.index("Run the game-night command")
+    assert "skip_backup:" in text
+    assert "type: boolean" in text
+    assert re.search(r"skip_backup:.*?default: false", text, re.DOTALL)
+    assert "SKIP_BACKUP:" in text
+    assert 'os.environ.get("SKIP_BACKUP", "false") == "true"' in text
+    assert 'argv.append("--skip-backup")' in text
+    assert 'raise SystemExit("skip_backup applies only to down.")' in text
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "never finished booting" in readme
+    assert "terraform init" in readme
     image_workflow = (REPO / ".github" / "workflows" / "image.yml").read_text(encoding="utf-8")
     assert (
         image_workflow.count("type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}")

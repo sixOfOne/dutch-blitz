@@ -193,7 +193,7 @@ PYTHONPATH=src python3 -m dutch_blitz_host down
 
 `down` uploads a final consistent snapshot (Python's `sqlite3` backup API), then destroys the instance. The S3 bucket is a separate Terraform state with `prevent_destroy`, so this command leaves it in place. A timer on the host also uploads about every 15 minutes. `PYTHONPATH=src python3 -m dutch_blitz_host backup` uploads once without tearing the host down.
 
-If the instance already shut itself down, `down` does not try the backup. It still deletes the blitz A record and the Terraform state. `--skip-backup` remains the manual escape when SSM fails and describe cannot tell whether the instance is gone. Scores saved after the last upload are not copied in that case. A tainted or un-id'd instance is looked up by the `Project=dutch-blitz` tag and backed up over SSM. The public IP is not required.
+If the instance already shut itself down, `down` does not try the backup. It still deletes the blitz A record and the Terraform state. `down` runs `terraform init` with the backend file before it reads outputs, so a new machine can see the S3 state from `up`. `--skip-backup` skips that snapshot and still deletes the instance and the blitz record. It is safe when the server never finished booting: cloud-init never installed the host package, so there is no score book on the instance. It is also the escape when the host is already gone and describe cannot tell. Scores saved after the last successful upload are not copied. A tainted or un-id'd instance is looked up by the `Project=dutch-blitz` tag and backed up over SSM. The public IP is not required.
 
 ### If the server is left up
 
@@ -320,7 +320,7 @@ To retire the bucket, edit `terraform/backup/main.tf` and remove the `prevent_de
 terraform -chdir=terraform/backup destroy -var-file=../terraform.tfvars
 ```
 
-`down` never runs that command. `--skip-backup` exists for a host that is already gone; scores saved after the last upload are not copied.
+`down` never runs that command. `--skip-backup` skips the final snapshot. Use it when the server never finished booting, or when the host is already gone. Scores saved after the last upload are not copied.
 
 ## Game night button
 
@@ -349,7 +349,7 @@ terraform -chdir=terraform/gha-deployer apply -var-file=terraform.tfvars
    - `CLERK_SECRET_KEY`
    - `TERRAFORM_TFVARS`: the body of the gitignored `terraform/terraform.tfvars`
    - `BACKEND_HCL`: the body of the gitignored `terraform/backend.hcl`
-9. **Actions → Game night → Run workflow**. Branch `main`, action `status`. Approve the review when GitHub asks. Then `up`, `backup`, or `down` the same way. One run at a time: a second click waits, and it does not cancel the run that is already going. The job limit is 50 minutes, inside the one-hour role session.
+9. **Actions → Game night → Run workflow**. Branch `main`, action `status`. Approve the review when GitHub asks. Then `up`, `backup`, or `down` the same way. One run at a time: a second click waits, and it does not cancel the run that is already going. The job limit is 50 minutes, inside the one-hour role session. `down` initializes the S3 backend before it reads outputs, so the state `up` wrote is visible on a new runner. Leave `skip_backup` off. Turn it on only with `down`, and only when the server never finished booting: cloud-init never installed `dutch_blitz_host`, so there is no score book to upload. The workflow then runs `down --skip-backup`. A night that did boot keeps the final snapshot.
 
 `status` prints the public outputs and the SSM ping. It does not print `cloud_init`. A change to `docs/grok-bot-dutch-blitz-policy.json` is applied with `terraform/iam-bot` only. The deployer role uses those same policies, so it sees the new document without another apply here. Re-apply `terraform/gha-deployer` when the trust policy or the OIDC provider setting changes. `ssm:SendCommand` on this role runs root commands on instances tagged `Project=dutch-blitz`, the same as the bot. There is no `ssm:StartSession`.
 

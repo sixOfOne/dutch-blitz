@@ -19,6 +19,13 @@
 # origin/main is used when that tag was published. Otherwise the
 # workflow reads the moving main tag, then the newest successful
 # Image run on main. Terraform does not receive main or latest.
+#
+# down initializes the S3 backend before it reads outputs. A new
+# runner has no .terraform directory, so that init is what makes the
+# state from up visible. skip_backup defaults to false. Turn it on
+# only with down, and only when the server never finished booting:
+# cloud-init never installed the host package, so there is no score
+# book to upload. The workflow then passes --skip-backup.
 name: Game night
 
 on:
@@ -39,6 +46,13 @@ on:
         type: string
         required: false
         default: ""
+      skip_backup:
+        description: >-
+          With down, skip the final snapshot. Safe when the server never
+          finished booting, so there is no score book to upload.
+        type: boolean
+        required: false
+        default: false
 
 # No permissions at workflow scope. The job below sets the ones it needs.
 permissions: {}
@@ -150,11 +164,13 @@ jobs:
           BACKEND_HCL: ${{ secrets.BACKEND_HCL }}
           TF_VAR_app_image: ${{ steps.image.outputs.app_image }}
           APP_ACTION: ${{ inputs.action }}
+          SKIP_BACKUP: ${{ inputs.skip_backup }}
           DUTCH_BLITZ_TFVARS: ${{ runner.temp }}/terraform.tfvars
           DUTCH_BLITZ_BACKEND_CONFIG: ${{ runner.temp }}/backend.hcl
         run: |
           python3 - <<'PY'
           import os
+          import sys
           from pathlib import Path
 
           root = Path(os.environ["RUNNER_TEMP"])
@@ -184,5 +200,13 @@ jobs:
           action = os.environ.get("APP_ACTION", "")
           if action not in {"up", "down", "backup", "status"}:
               raise SystemExit("Unknown action.")
+          skip = os.environ.get("SKIP_BACKUP", "false") == "true"
+          if skip and action != "down":
+              raise SystemExit("skip_backup applies only to down.")
+          argv = [sys.executable, "-m", "dutch_blitz_host", action]
+          if skip:
+              argv.append("--skip-backup")
+          env = os.environ.copy()
+          env["PYTHONPATH"] = "src"
+          os.execvpe(sys.executable, argv, env)
           PY
-          PYTHONPATH=src python3 -m dutch_blitz_host "$APP_ACTION"

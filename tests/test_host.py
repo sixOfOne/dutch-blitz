@@ -991,6 +991,7 @@ def test_down_skips_backup_when_the_instance_already_terminated(monkeypatch, cap
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    monkeypatch.setattr(host_cli, "_init_terraform", lambda *_args, **_kwargs: 0)
     assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
     assert called == {"backup": 0, "destroy": 1}
     out = capsys.readouterr().out
@@ -1014,6 +1015,7 @@ def test_down_still_backs_up_when_describe_fails(monkeypatch):
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(host_cli, "_init_terraform", lambda *_args, **_kwargs: 0)
     assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
     assert called["backup"] == 1
 
@@ -1156,6 +1158,7 @@ def test_down_backs_up_a_tainted_instance_found_by_tag(monkeypatch):
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    monkeypatch.setattr(host_cli, "_init_terraform", lambda *_args, **_kwargs: 0)
     assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
     assert seen["instance_id"] == "i-0123456789abcdef0"
     assert destroyed["called"] is True
@@ -1181,6 +1184,7 @@ def test_down_uses_the_state_id_when_outputs_have_none(monkeypatch):
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(host_cli, "_init_terraform", lambda *_args, **_kwargs: 0)
     assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
     assert seen["instance_id"] == "i-0123456789abcdef0"
     assert seen["region"] == "us-east-2"
@@ -1200,6 +1204,7 @@ def test_down_skips_backup_when_state_has_no_instance(monkeypatch, capsys):
 
     monkeypatch.setattr(host_cli, "cmd_backup", backup)
     monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(host_cli, "_init_terraform", lambda *_args, **_kwargs: 0)
     assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
     out = capsys.readouterr().out
     assert "Skipping the backup" in out
@@ -1234,6 +1239,7 @@ def test_down_refuses_to_guess_among_tagged_instances(monkeypatch):
 
     monkeypatch.setattr(host_cli, "cmd_backup", boom)
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    monkeypatch.setattr(host_cli, "_init_terraform", lambda *_args, **_kwargs: 0)
     assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 1
 
 
@@ -1250,7 +1256,110 @@ def test_down_refuses_to_destroy_when_the_final_backup_fails(monkeypatch):
         raise AssertionError("destroyed")
 
     monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    monkeypatch.setattr(host_cli, "_init_terraform", lambda *_args, **_kwargs: 0)
     assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 1
+
+
+def test_down_inits_remote_state_before_reading_it(monkeypatch, tmp_path):
+    tfvars = tmp_path / "terraform.tfvars"
+    tfvars.write_text('enable_aws = true\naws_region = "us-east-2"\n', encoding="utf-8")
+    monkeypatch.setenv("DUTCH_BLITZ_TFVARS", str(tfvars))
+    order: list[str] = []
+    seen: dict[str, object] = {}
+
+    def init(tf_dir, *, var_file, do_init):
+        order.append("init")
+        seen["tf_dir"] = tf_dir
+        seen["var_file"] = var_file
+        seen["do_init"] = do_init
+        return 0
+
+    def outputs(_path):
+        order.append("outputs")
+        return {"instance_id": {"value": "i-0123456789abcdef0"}}
+
+    monkeypatch.setattr(host_cli, "_init_terraform", init)
+    monkeypatch.setattr(host_cli, "terraform_outputs", outputs)
+    monkeypatch.setattr(
+        host_cli, "describe_instance_state", lambda *_args, **_kwargs: ("terminated", False)
+    )
+    monkeypatch.setattr(host_cli, "cmd_backup", lambda **_kwargs: 0)
+    monkeypatch.setattr(host_cli, "cmd_terraform", lambda *_args, **_kwargs: 0)
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=False) == 0
+    assert order == ["init", "outputs"]
+    assert seen["tf_dir"] == host_cli.NIGHT_DIR
+    assert seen["var_file"] == tfvars
+    assert seen["do_init"] is False
+
+
+def test_down_stops_when_state_init_fails(monkeypatch):
+    monkeypatch.setattr(
+        host_cli, "load_tfvars", lambda: {"enable_aws": "true", "aws_region": "us-east-2"}
+    )
+
+    def outputs(_path):
+        raise AssertionError("outputs")
+
+    def destroy(*_args, **_kwargs):
+        raise AssertionError("destroyed")
+
+    monkeypatch.setattr(host_cli, "_init_terraform", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(host_cli, "terraform_outputs", outputs)
+    monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=False, do_init=True) == 1
+
+
+def test_down_skip_backup_does_not_read_state_first(monkeypatch):
+    monkeypatch.setattr(host_cli, "load_tfvars", lambda: {"enable_aws": "true"})
+
+    def init(*_args, **_kwargs):
+        raise AssertionError("init")
+
+    def outputs(_path):
+        raise AssertionError("outputs")
+
+    monkeypatch.setattr(host_cli, "_init_terraform", init)
+
+    destroyed = {"called": False}
+
+    def destroy(*_args, **kwargs):
+        destroyed["called"] = kwargs["action"] == "destroy"
+        return 0
+
+    monkeypatch.setattr(host_cli, "terraform_outputs", outputs)
+    monkeypatch.setattr(host_cli, "cmd_terraform", destroy)
+    assert host_cli.cmd_destroy(dry_run=False, skip_backup=True, do_init=True) == 0
+    assert destroyed["called"] is True
+
+
+def test_backup_inits_before_reading_outputs(monkeypatch, tmp_path):
+    tfvars = tmp_path / "terraform.tfvars"
+    tfvars.write_text('enable_aws = true\naws_region = "us-east-2"\n', encoding="utf-8")
+    monkeypatch.setenv("DUTCH_BLITZ_TFVARS", str(tfvars))
+    order: list[str] = []
+
+    def init(tf_dir, *, var_file, do_init):
+        order.append("init")
+        assert tf_dir == host_cli.NIGHT_DIR
+        assert var_file == tfvars
+        assert do_init is True
+        return 0
+
+    def outputs(_path):
+        order.append("outputs")
+        return {
+            "mode": {"value": "aws"},
+            "public_ip": {"value": "203.0.113.10"},
+            "hostname": {"value": "blitz.example"},
+            "backup_bucket": {"value": "scores"},
+            "instance_id": {"value": "i-0123456789abcdef0"},
+        }
+
+    monkeypatch.setattr(host_cli, "_init_terraform", init)
+    monkeypatch.setattr(host_cli, "terraform_outputs", outputs)
+    monkeypatch.setattr(host_cli, "run_shell_script", lambda *_args, **_kwargs: None)
+    assert host_cli.cmd_backup(dry_run=True) == 0
+    assert order == ["init", "outputs"]
 
 
 def test_ssm_refuses_a_script_that_contains_a_secret():
