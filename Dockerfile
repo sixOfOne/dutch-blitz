@@ -7,7 +7,7 @@
 # same Python the host tools use). The @sha256 digest is the immutable
 # snapshot Dependabot bumps. A floating tag alone would let a rebuilt
 # base image change what we ship without a commit.
-FROM python:3.11-slim@sha256:b7a9e5f6a93d6d4a31f129bbd4bdee69efccb6ded0fb230d78aafaf37af98377 AS build
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS build
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -22,7 +22,7 @@ COPY requirements.txt .
 RUN /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
     && /opt/venv/bin/pip uninstall -y pip setuptools wheel
 
-FROM python:3.11-slim@sha256:b7a9e5f6a93d6d4a31f129bbd4bdee69efccb6ded0fb230d78aafaf37af98377
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
 
 # Fixed ids so the host can chown the score directory to the same user.
 # 10001 is not a login account. The host does not create a matching user.
